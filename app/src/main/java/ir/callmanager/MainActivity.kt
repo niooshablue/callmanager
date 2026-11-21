@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.CallLog
 import android.provider.ContactsContract
+import android.provider.ContactsContract.CommonDataKinds.Phone
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -49,8 +50,7 @@ data class Rec(val number: String, val name: String, val type: Int, val date: Lo
 
 fun loadContacts(c: Context): List<Contact> {
     val out = mutableListOf<Contact>()
-    val p = ContactsContract.CommonDataKinds.Phone
-    c.contentResolver.query(p.CONTENT_URI, arrayOf(p.DISPLAY_NAME, p.NUMBER), null, null, "${p.DISPLAY_NAME} COLLATE LOCALIZED ASC")
+    c.contentResolver.query(Phone.CONTENT_URI, arrayOf(Phone.DISPLAY_NAME, Phone.NUMBER), null, null, "${Phone.DISPLAY_NAME} COLLATE LOCALIZED ASC")
         ?.use { while (it.moveToNext()) out += Contact(it.getString(0) ?: "", it.getString(1) ?: "") }
     return out
 }
@@ -213,7 +213,7 @@ fun ContactsScreen() {
         }
         LazyColumn {
             items(list) { c ->
-                ListItem(Modifier.clickable { sel = c },
+                ListItem(modifier = Modifier.clickable { sel = c },
                     leadingContent = { Avatar(c.name) },
                     headlineContent = { Text(c.name) },
                     supportingContent = { Text(Jalali.fa(c.number)) })
