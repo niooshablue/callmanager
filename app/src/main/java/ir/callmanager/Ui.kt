@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalFoundationApi::class)
+@file:OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 package ir.callmanager
 
 import androidx.compose.animation.core.RepeatMode
@@ -31,6 +31,15 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.lerp
+import android.Manifest
+import android.content.pm.PackageManager
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -171,8 +180,8 @@ fun CallCircleButton(answer: Boolean, label: String, pulse: Boolean = false, onC
 // ---------------- اجزای مشترک ----------------
 
 @Composable
-fun CallPill(modifier: Modifier, title: String, sub: String?, onClick: () -> Unit) {
-    Button(onClick, modifier.height(56.dp), shape = RoundedCornerShape(28.dp),
+fun CallPill(modifier: Modifier, title: String, sub: String?, enabled: Boolean = true, onClick: () -> Unit) {
+    Button(onClick, modifier.height(56.dp), enabled = enabled, shape = RoundedCornerShape(28.dp),
         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E9F5B)), contentPadding = PaddingValues(horizontal = 10.dp)) {
         Handset(Color.White, 20.dp); Spacer(Modifier.width(8.dp))
         Column(horizontalAlignment = Alignment.Start) {
@@ -184,14 +193,14 @@ fun CallPill(modifier: Modifier, title: String, sub: String?, onClick: () -> Uni
 
 /** دکمه(های) تماس؛ اگر دو سیم‌کارت باشد برای هر کدام یک دکمه (پیش‌فرض با ★) */
 @Composable
-fun SimCallRow(number: String, modifier: Modifier = Modifier) {
+fun SimCallRow(number: String, modifier: Modifier = Modifier, enabled: Boolean = true) {
     val ctx = LocalContext.current
     val sims = Repo.sims
-    if (number.isBlank()) return
+    val on = enabled && number.isNotBlank()
     Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        if (sims.size < 2) CallPill(Modifier.weight(1f), "تماس", null) { placeCall(ctx, number, sims.firstOrNull()?.handle) }
+        if (sims.size < 2) CallPill(Modifier.weight(1f), "تماس", null, on) { placeCall(ctx, number, sims.firstOrNull()?.handle) }
         else sims.forEach { s ->
-            CallPill(Modifier.weight(1f), "SIM ${Jalali.fa(s.index)}" + if (s.isDefault) " ★" else "", s.label) {
+            CallPill(Modifier.weight(1f), "SIM ${Jalali.fa(s.index)}" + if (s.isDefault) " ★" else "", s.label, on) {
                 placeCall(ctx, number, s.handle)
             }
         }
@@ -249,5 +258,108 @@ fun Keypad(modifier: Modifier = Modifier, keyHeight: Dp = 58.dp, onKey: (Char) -
 fun Empty(t: String) {
     Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) {
         Text(t, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+    }
+}
+
+
+// ---------------- ظاهر مدرن، حرکات، منو ----------------
+
+@Composable
+fun AppHeader(title: String) {
+    val cs = MaterialTheme.colorScheme
+    Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(bottomStart = 28.dp, bottomEnd = 28.dp))
+        .background(Brush.horizontalGradient(listOf(lerp(cs.surface, cs.primary, 0.28f), lerp(cs.surface, cs.primary, 0.06f))))
+        .statusBarsPadding().padding(horizontal = 22.dp, vertical = 16.dp)) {
+        Text(title, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+fun MenuItem(emoji: String, title: String, subtitle: String, onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Surface(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).clickable(onClick = onClick),
+        shape = RoundedCornerShape(20.dp), color = cs.surfaceContainerHigh) {
+        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(46.dp).clip(RoundedCornerShape(14.dp)).background(cs.primaryContainer), contentAlignment = Alignment.Center) {
+                Text(emoji, fontSize = 22.sp)
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text(subtitle, fontSize = 12.sp, color = cs.onSurfaceVariant)
+            }
+            Icon(Icons.Default.KeyboardArrowLeft, null, tint = cs.onSurfaceVariant)
+        }
+    }
+}
+
+fun actionLabel(a: Int) = when (a) {
+    1 -> "باز کردن جزئیات"; 2 -> "تماس"; 3 -> "ارسال پیامک"; 4 -> "حذف از تاریخچه"
+    5 -> "انتخاب چندتایی"; 6 -> "رد خودکار (فعال/غیرفعال)"; else -> "هیچ‌کاری"
+}
+
+fun actionEmoji(a: Int) = when (a) { 1 -> "📄"; 2 -> "📞"; 3 -> "✉️"; 4 -> "🗑"; 5 -> "☑️"; 6 -> "🚫"; else -> "" }
+
+private fun actionColor(a: Int) = when (a) {
+    2 -> Color(0xFF2E9F5B); 3 -> Color(0xFF1E88E5); 4 -> Color(0xFFD32F2F)
+    5 -> Color(0xFF607D8B); 6 -> Color(0xFFFB8C00); else -> Color(0xFF3F51B5)
+}
+
+@Composable
+fun ChoiceRow(title: String, value: Int, options: List<Int>, onSelect: (Int) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth().clickable { open = true }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, Modifier.weight(1f))
+        Text(actionLabel(value), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+    }
+    if (open) AlertDialog(onDismissRequest = { open = false }, title = { Text(title) },
+        text = {
+            Column {
+                options.forEach { o ->
+                    Row(Modifier.fillMaxWidth().clickable { onSelect(o); open = false }, verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(o == value, { onSelect(o); open = false }); Text(actionLabel(o))
+                    }
+                }
+            }
+        }, confirmButton = {})
+}
+
+/** کشیدن به چپ/راست؛ left = عمل کشیدن به سمت چپ، right = عمل کشیدن به سمت راست (چیدمان راست‌به‌چپ) */
+@Composable
+fun SwipeRow(left: Int, right: Int, onAction: (Int) -> Unit, content: @Composable () -> Unit) {
+    val curL by rememberUpdatedState(left)
+    val curR by rememberUpdatedState(right)
+    val cur by rememberUpdatedState(onAction)
+    val st = rememberSwipeToDismissBoxState(confirmValueChange = { v ->
+        if (v == SwipeToDismissBoxValue.StartToEnd) cur(curL) else if (v == SwipeToDismissBoxValue.EndToStart) cur(curR)
+        false
+    })
+    SwipeToDismissBox(st, backgroundContent = {
+        val dir = st.dismissDirection
+        val a = if (dir == SwipeToDismissBoxValue.StartToEnd) left else if (dir == SwipeToDismissBoxValue.EndToStart) right else 0
+        Box(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 3.dp).clip(RoundedCornerShape(18.dp))
+            .background(if (a == 0) Color.Transparent else actionColor(a)),
+            contentAlignment = if (dir == SwipeToDismissBoxValue.StartToEnd) Alignment.CenterStart else Alignment.CenterEnd) {
+            if (a != 0) Text(actionEmoji(a) + " " + actionLabel(a), Modifier.padding(horizontal = 20.dp), color = Color.White, fontSize = 13.sp)
+        }
+    }, enableDismissFromStartToEnd = left != 0, enableDismissFromEndToStart = right != 0) { content() }
+}
+
+/** حذف رکوردهای تاریخچه؛ در صورت نیاز مجوز WRITE_CALL_LOG را می‌پرسد */
+@Composable
+fun rememberCallDeleter(): (List<Long>) -> Unit {
+    val ctx = LocalContext.current
+    var pending by remember { mutableStateOf<List<Long>?>(null) }
+    fun run(ids: List<Long>) {
+        val ok = deleteCalls(ctx, ids)
+        Toast.makeText(ctx, if (ok) "حذف شد" else "حذف ممکن نشد (برنامه باید شماره‌گیر پیش‌فرض باشد)", Toast.LENGTH_LONG).show()
+    }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { g ->
+        val p = pending; pending = null
+        if (g && p != null) run(p) else Toast.makeText(ctx, "برای حذف سابقه، مجوز لازم است", Toast.LENGTH_SHORT).show()
+    }
+    return { ids ->
+        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.WRITE_CALL_LOG) == PackageManager.PERMISSION_GRANTED) run(ids)
+        else { pending = ids; launcher.launch(Manifest.permission.WRITE_CALL_LOG) }
     }
 }

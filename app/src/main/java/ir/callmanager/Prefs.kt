@@ -20,21 +20,56 @@ object Prefs {
     var persian by mutableStateOf(true)
     var rejectUnknown by mutableStateOf(false)
 
+    // حرکات: 0 هیچ، 1 جزئیات، 2 تماس، 3 پیامک، 4 حذف از تاریخچه، 5 انتخاب چندتایی، 6 رد خودکار
+    var hTap by mutableIntStateOf(1)
+    var hLong by mutableIntStateOf(5)
+    var hSwL by mutableIntStateOf(2)
+    var hSwR by mutableIntStateOf(3)
+    var cTap by mutableIntStateOf(1)
+    var cLong by mutableIntStateOf(0)
+    var cSwL by mutableIntStateOf(2)
+    var cSwR by mutableIntStateOf(3)
+
+    var missedNotify by mutableStateOf(true)
+    var missedBadge by mutableStateOf(true)
+    var missedCount = 0
+    var missedLabels = ""
+    var missedLast = ""
+
     fun init(c: Context) {
         val s = c.getSharedPreferences("settings", Context.MODE_PRIVATE)
         sp = s
         bg = s.getInt("bg", 0); card = s.getInt("card", 0); text = s.getInt("text", 0); accent = s.getInt("accent", 0)
         fontScale = s.getFloat("fontScale", 1f); font = s.getInt("font", 0)
         persian = s.getBoolean("persian", true); rejectUnknown = s.getBoolean("rejectUnknown", false)
+        hTap = s.getInt("hTap", 1); hLong = s.getInt("hLong", 5); hSwL = s.getInt("hSwL", 2); hSwR = s.getInt("hSwR", 3)
+        cTap = s.getInt("cTap", 1); cLong = s.getInt("cLong", 0); cSwL = s.getInt("cSwL", 2); cSwR = s.getInt("cSwR", 3)
+        missedNotify = s.getBoolean("missedNotify", true); missedBadge = s.getBoolean("missedBadge", true)
+        missedCount = s.getInt("missedCount", 0); missedLabels = s.getString("missedLabels", "") ?: ""; missedLast = s.getString("missedLast", "") ?: ""
     }
 
     fun save() {
         sp?.edit()?.putInt("bg", bg)?.putInt("card", card)?.putInt("text", text)?.putInt("accent", accent)
             ?.putFloat("fontScale", fontScale)?.putInt("font", font)
-            ?.putBoolean("persian", persian)?.putBoolean("rejectUnknown", rejectUnknown)?.apply()
+            ?.putBoolean("persian", persian)?.putBoolean("rejectUnknown", rejectUnknown)
+            ?.putInt("hTap", hTap)?.putInt("hLong", hLong)?.putInt("hSwL", hSwL)?.putInt("hSwR", hSwR)
+            ?.putInt("cTap", cTap)?.putInt("cLong", cLong)?.putInt("cSwL", cSwL)?.putInt("cSwR", cSwR)
+            ?.putBoolean("missedNotify", missedNotify)?.putBoolean("missedBadge", missedBadge)?.apply()
     }
 
     fun reset() { bg = 0; card = 0; text = 0; accent = 0; fontScale = 1f; font = 0; save() }
+
+    fun addMissed(label: String, number: String) {
+        missedCount++; missedLast = number
+        missedLabels = (missedLabels.split("\n").filter { it.isNotBlank() } + label).takeLast(3).joinToString("\n")
+        persistMissed()
+    }
+
+    fun clearMissed() { missedCount = 0; missedLabels = ""; missedLast = ""; persistMissed() }
+
+    private fun persistMissed() {
+        sp?.edit()?.putInt("missedCount", missedCount)?.putString("missedLabels", missedLabels)?.putString("missedLast", missedLast)?.apply()
+    }
 
     val fontNames = listOf("پیش‌فرض سیستم", "Sans Serif", "Serif", "Monospace", "Cursive")
     fun family(): FontFamily = when (font) {

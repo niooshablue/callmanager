@@ -26,7 +26,7 @@ data class Contact(val id: Long, val name: String, val number: String) {
     val lname: String = name.lowercase()
 }
 
-data class Rec(val number: String, val name: String, val type: Int, val date: Long, val duration: Long, val simId: String)
+data class Rec(val number: String, val name: String, val type: Int, val date: Long, val duration: Long, val simId: String, val id: Long = 0L)
 data class Sim(val handle: PhoneAccountHandle, val label: String, val index: Int, val isDefault: Boolean)
 data class Hit(val name: String, val number: String)
 data class DetailTarget(val number: String, val name: String, val contactId: Long = 0L)
@@ -42,19 +42,19 @@ fun loadContacts(c: Context): List<Contact> {
     return out
 }
 
-fun loadCalls(c: Context): List<Rec> {
+fun loadCalls(c: Context, limit: Int = 5000): List<Rec> {
     val out = ArrayList<Rec>(1000)
     try {
         val q = Bundle().apply {
-            putInt(ContentResolver.QUERY_ARG_LIMIT, 5000)
+            putInt(ContentResolver.QUERY_ARG_LIMIT, limit)
             putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(CallLog.Calls.DATE))
             putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
         }
         c.contentResolver.query(CallLog.Calls.CONTENT_URI,
             arrayOf(CallLog.Calls.NUMBER, CallLog.Calls.CACHED_NAME, CallLog.Calls.TYPE, CallLog.Calls.DATE,
-                CallLog.Calls.DURATION, CallLog.Calls.PHONE_ACCOUNT_ID), q, null)?.use {
+                CallLog.Calls.DURATION, CallLog.Calls.PHONE_ACCOUNT_ID, CallLog.Calls._ID), q, null)?.use {
             while (it.moveToNext()) out.add(Rec(it.getString(0) ?: "", it.getString(1) ?: "", it.getInt(2), it.getLong(3),
-                it.getLong(4), it.getString(5) ?: ""))
+                it.getLong(4), it.getString(5) ?: "", it.getLong(6)))
         }
     } catch (e: Exception) { }
     return out
@@ -94,6 +94,7 @@ object Repo {
         scope.launch {
             try {
                 sims = loadSims(app)
+                if (calls.isEmpty()) calls = loadCalls(app, 60)   // نمایش سریع اولیه
                 val ct = loadContacts(app)
                 contacts = ct
                 names = ct.associate { norm(it.number) to it.name }
@@ -106,6 +107,15 @@ object Repo {
         }
     }
 }
+
+fun deleteCalls(c: Context, ids: List<Long>): Boolean = try {
+    ids.chunked(400).forEach { ch ->
+        c.contentResolver.delete(CallLog.Calls.CONTENT_URI, "${CallLog.Calls._ID} IN (${ch.joinToString(",")})", null)
+    }
+    val gone = ids.toHashSet()
+    Repo.calls = Repo.calls.filter { it.id !in gone }
+    true
+} catch (e: Exception) { false }
 
 fun targetFor(number: String, name: String): DetailTarget {
     val n = norm(number)

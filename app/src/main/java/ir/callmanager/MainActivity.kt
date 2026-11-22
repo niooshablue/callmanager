@@ -2,25 +2,29 @@
 package ir.callmanager
 
 import android.Manifest
+import android.app.NotificationManager
 import android.app.role.RoleManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
-import android.provider.CallLog
 import android.provider.ContactsContract
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -33,13 +37,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.flow.filter
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(s: Bundle?) {
@@ -51,6 +54,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         if (hasPerms(this)) Repo.refresh(this)
+        Notifs.clearMissed(this)   // با باز شدن برنامه، نشان و اعلان تماس بی‌پاسخ پاک می‌شود
     }
 }
 
@@ -59,20 +63,25 @@ val PERMS = arrayOf(Manifest.permission.READ_CONTACTS, Manifest.permission.READ_
 
 fun hasPerms(c: Context) = PERMS.all { ContextCompat.checkSelfPermission(c, it) == PackageManager.PERMISSION_GRANTED }
 
+val dbTick = mutableIntStateOf(0)
+
 @Composable
 fun Root(initialDial: String) {
     val ctx = LocalContext.current
     var ok by remember { mutableStateOf(hasPerms(ctx)) }
     var roleTick by remember { mutableIntStateOf(0) }
+    val ask = PERMS + Manifest.permission.POST_NOTIFICATIONS + Manifest.permission.WRITE_CALL_LOG
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         ok = hasPerms(ctx); if (ok) Repo.refresh(ctx)
     }
     val roleLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { roleTick++ }
-    LaunchedEffect(Unit) { if (!ok) permLauncher.launch(PERMS + Manifest.permission.POST_NOTIFICATIONS) else Repo.refresh(ctx) }
+    LaunchedEffect(Unit) { if (!ok) permLauncher.launch(ask) else Repo.refresh(ctx) }
 
     val rm = ctx.getSystemService(RoleManager::class.java)
+    val nm = ctx.getSystemService(NotificationManager::class.java)
     val isDialer = remember(roleTick) { rm.isRoleHeld(RoleManager.ROLE_DIALER) }
     val isScreener = remember(roleTick) { rm.isRoleHeld(RoleManager.ROLE_CALL_SCREENING) }
+    val fsiOk = remember(roleTick) { Build.VERSION.SDK_INT < 34 || nm.canUseFullScreenIntent() }
 
     var tab by remember { mutableIntStateOf(if (initialDial.isNotBlank()) 1 else 0) }
     var detail by remember { mutableStateOf<DetailTarget?>(null) }
@@ -85,9 +94,9 @@ fun Root(initialDial: String) {
         DetailScreen(d) { detail = null }
     } else {
         Scaffold(
-            topBar = { TopAppBar(title = { Text(tabs[tab].first, fontWeight = FontWeight.Bold) }) },
+            topBar = { AppHeader(tabs[tab].first) },
             bottomBar = {
-                NavigationBar {
+                NavigationBar(Modifier.clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))) {
                     tabs.forEachIndexed { i, t ->
                         NavigationBarItem(tab == i, { tab = i }, { Icon(t.second, null) }, label = { Text(t.first, fontSize = 11.sp, maxLines = 1) })
                     }
@@ -96,15 +105,16 @@ fun Root(initialDial: String) {
         ) { pad ->
             Column(Modifier.padding(pad).fillMaxSize()) {
                 if (!ok) {
-                    Banner("برای نمایش تماس‌ها و مخاطبین، دسترسی‌ها لازم است.", "اعطای دسترسی") {
-                        permLauncher.launch(PERMS + Manifest.permission.POST_NOTIFICATIONS)
-                    }
+                    Banner("برای نمایش تماس‌ها و مخاطبین، دسترسی‌ها لازم است.", "اعطای دسترسی") { permLauncher.launch(ask) }
                 } else {
                     if (!isDialer) Banner("برای نمایش یادداشت هنگام تماس، برنامه را «شماره‌گیر پیش‌فرض» کنید.", "فعال‌سازی") {
                         roleLauncher.launch(rm.createRequestRoleIntent(RoleManager.ROLE_DIALER))
                     }
                     if (!isScreener) Banner("برای رد خودکار تماس، دسترسی «فیلتر تماس» لازم است.", "فعال‌سازی") {
                         roleLauncher.launch(rm.createRequestRoleIntent(RoleManager.ROLE_CALL_SCREENING))
+                    }
+                    if (!fsiOk) Banner("برای نمایش صفحه تماس روی صفحه قفل، مجوز «اعلان تمام‌صفحه» لازم است.", "اجازه") {
+                        roleLauncher.launch(Intent("android.settings.MANAGE_APP_USE_FULL_SCREEN_INTENT", Uri.parse("package:" + ctx.packageName)))
                     }
                     when (tab) {
                         0 -> RecentsScreen { detail = it }
@@ -135,7 +145,14 @@ fun Banner(text: String, action: String, onClick: () -> Unit) {
 @Composable
 fun RecentsScreen(onOpen: (DetailTarget) -> Unit) {
     val ctx = LocalContext.current
+    val db = remember { Db.get(ctx) }
+    val cs = MaterialTheme.colorScheme
+    val deleter = rememberCallDeleter()
     var filter by remember { mutableIntStateOf(0) }
+    var limit by remember(filter) { mutableIntStateOf(30) }
+    val selected = remember { mutableStateListOf<Long>() }
+    var selMode by remember { mutableStateOf(false) }
+    var confirm by remember { mutableStateOf<List<Long>?>(null) }
     val all = Repo.calls
     val list = remember(all, filter) {
         when (filter) {
@@ -145,43 +162,95 @@ fun RecentsScreen(onOpen: (DetailTarget) -> Unit) {
             else -> all
         }
     }
-    val grouped = remember(list) { list.groupBy { Jalali.dayIndex(it.date) } }
+    val shown = remember(list, limit) { list.take(limit) }
+    val grouped = remember(shown) { shown.groupBy { Jalali.dayIndex(it.date) } }
+    val state = rememberLazyListState()
+
+    // بارگذاری تدریجی: ۳۰ مورد اول، با اسکرول موارد بعدی
+    LaunchedEffect(state, list.size) {
+        snapshotFlow {
+            val li = state.layoutInfo
+            (li.visibleItemsInfo.lastOrNull()?.index ?: 0) >= li.totalItemsCount - 6
+        }.filter { it }.collect { if (limit < list.size) limit += 30 }
+    }
+    BackHandler(selMode) { selMode = false; selected.clear() }
+
+    fun toggle(r: Rec) {
+        if (r.id in selected) selected.remove(r.id) else selected.add(r.id)
+        if (selected.isEmpty()) selMode = false
+    }
+    fun perform(a: Int, r: Rec) {
+        when (a) {
+            1 -> onOpen(targetFor(r.number, r.name))
+            2 -> callNumber(ctx, r.number)
+            3 -> sendSms(ctx, r.number)
+            4 -> confirm = listOf(r.id)
+            5 -> { selMode = true; if (r.id !in selected) selected.add(r.id) }
+            6 -> {
+                val b = !db.isBlocked(r.number); db.setBlocked(r.number, b)
+                Toast.makeText(ctx, if (b) "رد خودکار این شماره فعال شد" else "رد خودکار این شماره لغو شد", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     Column {
-        Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("همه", "بی‌پاسخ", "ورودی", "خروجی").forEachIndexed { i, t ->
-                FilterChip(filter == i, { filter = i }, label = { Text(t) })
+        if (selMode) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton({ selMode = false; selected.clear() }) { Icon(Icons.Default.Close, "لغو") }
+                Text(Jalali.fa("${selected.size} مورد انتخاب شد"), Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                TextButton({ selected.clear(); selected.addAll(list.map { it.id }) }) { Text("همه") }
+                IconButton({ if (selected.isNotEmpty()) confirm = selected.toList() }) { Icon(Icons.Default.Delete, "حذف", tint = Color(0xFFD32F2F)) }
+            }
+        } else {
+            Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("همه", "بی‌پاسخ", "ورودی", "خروجی").forEachIndexed { i, t -> FilterChip(filter == i, { filter = i }, label = { Text(t) }) }
             }
         }
         if (list.isEmpty()) Empty(if (Repo.loadingContacts) "در حال بارگذاری…" else "تماسی وجود ندارد")
-        LazyColumn(contentPadding = PaddingValues(bottom = 12.dp)) {
-            grouped.forEach { (_, rows) ->
-                item {
-                    Text(Jalali.dayLabel(rows.first().date), Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 2.dp),
-                        fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+        LazyColumn(state = state, contentPadding = PaddingValues(bottom = 12.dp)) {
+            grouped.forEach { (day, rows) ->
+                item(key = "h$day") {
+                    Text(Jalali.dayLabel(rows.first().date), Modifier.padding(start = 20.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
+                        fontSize = 13.sp, fontWeight = FontWeight.Bold, color = cs.primary)
                 }
-                items(rows) { r -> CallRow(r, onOpen) }
+                items(rows, key = { it.id }) { r ->
+                    SwipeRow(if (selMode) 0 else Prefs.hSwL, if (selMode) 0 else Prefs.hSwR, { a -> perform(a, r) }) {
+                        CallRow(r, selMode, r.id in selected,
+                            onTap = { if (selMode) toggle(r) else perform(Prefs.hTap, r) },
+                            onLong = { if (selMode) toggle(r) else perform(Prefs.hLong, r) })
+                    }
+                }
             }
         }
+    }
+    confirm?.let { ids ->
+        AlertDialog(onDismissRequest = { confirm = null }, title = { Text("حذف از تاریخچه") },
+            text = { Text(Jalali.fa("${ids.size} مورد از تاریخچه تماس حذف شود؟")) },
+            confirmButton = { TextButton({ deleter(ids); confirm = null; selected.clear(); selMode = false }) { Text("حذف", color = Color(0xFFD32F2F)) } },
+            dismissButton = { TextButton({ confirm = null }) { Text("انصراف") } })
     }
 }
 
 @Composable
-fun CallRow(r: Rec, onOpen: (DetailTarget) -> Unit) {
+fun CallRow(r: Rec, selMode: Boolean, isSel: Boolean, onTap: () -> Unit, onLong: () -> Unit) {
     val ctx = LocalContext.current
     val cs = MaterialTheme.colorScheme
     val title = r.name.ifBlank { Repo.names[norm(r.number)] ?: "" }.ifBlank { Jalali.fa(r.number).ifBlank { "ناشناس" } }
     val simIdx = Repo.sims.indexOfFirst { it.handle.id == r.simId }
     val sim = if (simIdx >= 0 && Repo.sims.size > 1) "  •  SIM ${Jalali.fa(simIdx + 1)}" else ""
     val dur = if (r.duration > 0) "  •  " + fmtDur(r.duration) else ""
-    Row(Modifier.fillMaxWidth().clickable { onOpen(targetFor(r.number, r.name)) }.padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically) {
-        CallTypeBadge(r.type)
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, fontWeight = FontWeight.SemiBold, maxLines = 1, color = if (r.type == 3) Color(0xFFE53935) else cs.onSurface)
-            Text(Jalali.time(r.date) + dur + sim, fontSize = 12.sp, color = cs.onSurfaceVariant)
+    Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 3.dp).clip(RoundedCornerShape(18.dp))
+        .combinedClickable(onClick = onTap, onLongClick = onLong),
+        shape = RoundedCornerShape(18.dp), color = if (isSel) cs.primaryContainer else cs.surfaceContainerHigh) {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (selMode) Checkbox(isSel, null) else CallTypeBadge(r.type)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, fontWeight = FontWeight.SemiBold, maxLines = 1, color = if (r.type == 3) Color(0xFFE53935) else cs.onSurface)
+                Text(Jalali.time(r.date) + dur + sim, fontSize = 12.sp, color = cs.onSurfaceVariant)
+            }
+            if (!selMode) IconButton({ callNumber(ctx, r.number) }) { Handset(cs.primary, 22.dp) }
         }
-        IconButton({ callNumber(ctx, r.number) }) { Handset(cs.primary, 22.dp) }
     }
 }
 
@@ -190,7 +259,6 @@ fun CallRow(r: Rec, onOpen: (DetailTarget) -> Unit) {
 @Composable
 fun DialerScreen(initial: String, onOpen: (DetailTarget) -> Unit) {
     val ctx = LocalContext.current
-    val cs = MaterialTheme.colorScheme
     var num by remember { mutableStateOf(initial) }
     val q = num.filter { it.isDigit() }
     val contacts = Repo.contacts
@@ -235,12 +303,32 @@ fun DialerScreen(initial: String, onOpen: (DetailTarget) -> Unit) {
             }
             Keypad(keyHeight = 54.dp, onKey = { num += it }, onLongZero = { num += "+" })
             Spacer(Modifier.height(6.dp))
-            SimCallRow(num)
+            SimCallRow(num, enabled = num.isNotBlank())   // دکمه‌های تماس از ابتدا ثابت هستند
         }
     }
 }
 
 // ---------------- مخاطبین ----------------
+
+@Composable
+fun ContactRow(c: Contact, onTap: () -> Unit, onLong: () -> Unit) {
+    val ctx = LocalContext.current
+    val cs = MaterialTheme.colorScheme
+    Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 3.dp).clip(RoundedCornerShape(18.dp))
+        .combinedClickable(onClick = onTap, onLongClick = onLong),
+        shape = RoundedCornerShape(18.dp), color = cs.surfaceContainerHigh) {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Avatar(c.name)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(c.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                Text(Jalali.fa(c.number), fontSize = 12.sp, color = cs.onSurfaceVariant)
+            }
+            IconButton({ sendSms(ctx, c.number) }) { Icon(Icons.Default.Email, "پیامک", tint = cs.onSurfaceVariant) }
+            IconButton({ callNumber(ctx, c.number) }) { Handset(cs.primary, 22.dp) }
+        }
+    }
+}
 
 @Composable
 fun ContactsScreen(onOpen: (DetailTarget) -> Unit) {
@@ -259,6 +347,17 @@ fun ContactsScreen(onOpen: (DetailTarget) -> Unit) {
                 (gsel == 0 || members[norm(c.number)]?.contains(gsel) == true)
         }
     }
+    fun perform(a: Int, c: Contact) {
+        when (a) {
+            1 -> onOpen(DetailTarget(c.number, c.name, c.id))
+            2 -> callNumber(ctx, c.number)
+            3 -> sendSms(ctx, c.number)
+            6 -> {
+                val b = !db.isBlocked(c.number); db.setBlocked(c.number, b)
+                Toast.makeText(ctx, if (b) "رد خودکار این شماره فعال شد" else "رد خودکار این شماره لغو شد", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
     Column {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(q, { q = it }, Modifier.weight(1f), singleLine = true, placeholder = { Text("جستجوی نام یا شماره") },
@@ -270,22 +369,14 @@ fun ContactsScreen(onOpen: (DetailTarget) -> Unit) {
             FilterChip(gsel == 0, { gsel = 0 }, label = { Text("همه") })
             groups.forEach { g -> FilterChip(gsel == g.id, { gsel = g.id }, label = { Text(g.name) }) }
         }
-        Text(Jalali.fa("${list.size} مخاطب"), Modifier.padding(horizontal = 16.dp, vertical = 6.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(Jalali.fa("${list.size} مخاطب"), Modifier.padding(horizontal = 20.dp, vertical = 6.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (Repo.loadingContacts && all.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-        } else LazyColumn {
+        } else LazyColumn(contentPadding = PaddingValues(bottom = 12.dp)) {
             items(list) { c ->
-                ListItem(
-                    modifier = Modifier.clickable { onOpen(DetailTarget(c.number, c.name, c.id)) },
-                    leadingContent = { Avatar(c.name) },
-                    headlineContent = { Text(c.name, maxLines = 1) },
-                    supportingContent = { Text(Jalali.fa(c.number), fontSize = 12.sp) },
-                    trailingContent = {
-                        Row {
-                            IconButton({ sendSms(ctx, c.number) }) { Icon(Icons.Default.Email, "پیامک", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-                            IconButton({ callNumber(ctx, c.number) }) { Handset(MaterialTheme.colorScheme.primary, 22.dp) }
-                        }
-                    })
+                SwipeRow(Prefs.cSwL, Prefs.cSwR, { a -> perform(a, c) }) {
+                    ContactRow(c, onTap = { perform(Prefs.cTap, c) }, onLong = { perform(Prefs.cLong, c) })
+                }
             }
         }
     }
@@ -331,5 +422,3 @@ fun GroupsScreen() {
         confirmButton = { TextButton({ if (name.isNotBlank()) db.addGroup(name); name = ""; adding = false; reload() }) { Text("افزودن") } },
         dismissButton = { TextButton({ adding = false }) { Text("انصراف") } })
 }
-
-val dbTick = mutableIntStateOf(0)

@@ -2,7 +2,9 @@ package ir.callmanager
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import android.telecom.Call
 import android.telecom.CallAudioState
 import android.widget.Toast
@@ -38,6 +40,10 @@ import kotlinx.coroutines.launch
 class InCallActivity : ComponentActivity() {
     override fun onCreate(s: Bundle?) {
         super.onCreate(s)
+        if (Build.VERSION.SDK_INT >= 27) { setShowWhenLocked(true); setTurnScreenOn(true) }
+        @Suppress("DEPRECATION")
+        window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD)
         setContent {
             AppTheme {
                 val call = CallHolder.call
@@ -77,6 +83,17 @@ fun InCallScreen(call: Call) {
     var showPad by remember { mutableStateOf(false) }
     var typed by remember { mutableStateOf("") }
     var editNote by remember { mutableStateOf(false) }
+    var showRoute by remember { mutableStateOf(false) }
+    val routeOpts = listOf(
+        Triple(CallAudioState.ROUTE_EARPIECE, "بلندگوی مکالمه (گوشی)", "📱"),
+        Triple(CallAudioState.ROUTE_SPEAKER, "بلندگوی گوشی", "🔊"),
+        Triple(CallAudioState.ROUTE_BLUETOOTH, "بلوتوث", "🎧"),
+        Triple(CallAudioState.ROUTE_WIRED_HEADSET, "هدفون سیمی", "🎧")
+    ).filter { (CallHolder.routeMask and it.first) != 0 }
+    fun setRoute(r: Int) {
+        @Suppress("DEPRECATION")
+        CallHolder.service?.setAudioRoute(r)
+    }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); delay(1000) } }
     val connected = state == Call.STATE_ACTIVE || state == Call.STATE_HOLDING
@@ -159,9 +176,10 @@ fun InCallScreen(call: Call) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                     ActionBtn("🎙", "بی‌صدا", CallHolder.muted) { CallHolder.service?.setMuted(!CallHolder.muted) }
                     ActionBtn("⌨", "صفحه‌کلید", false) { showPad = true }
-                    ActionBtn("🔊", "بلندگو", CallHolder.speaker) {
-                        @Suppress("DEPRECATION")
-                        CallHolder.service?.setAudioRoute(if (CallHolder.speaker) CallAudioState.ROUTE_EARPIECE else CallAudioState.ROUTE_SPEAKER)
+                    ActionBtn(routeOpts.firstOrNull { it.first == CallHolder.route }?.third ?: "🔊", "خروجی صدا",
+                        CallHolder.route != CallAudioState.ROUTE_EARPIECE) {
+                        if (routeOpts.size > 2) showRoute = true
+                        else setRoute(if (CallHolder.route == CallAudioState.ROUTE_SPEAKER) CallAudioState.ROUTE_EARPIECE else CallAudioState.ROUTE_SPEAKER)
                     }
                 }
                 Spacer(Modifier.height(12.dp))
@@ -187,6 +205,19 @@ fun InCallScreen(call: Call) {
             Spacer(Modifier.height(8.dp))
         }
     }
+
+    if (showRoute) AlertDialog(onDismissRequest = { showRoute = false }, title = { Text("خروجی صدا") },
+        text = {
+            Column {
+                routeOpts.forEach { o ->
+                    Row(Modifier.fillMaxWidth().clickable { setRoute(o.first); showRoute = false }.padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(CallHolder.route == o.first, { setRoute(o.first); showRoute = false })
+                        Text(o.third + "  " + o.second)
+                    }
+                }
+            }
+        }, confirmButton = { TextButton({ showRoute = false }) { Text("بستن") } })
 
     if (editNote) {
         var tmp by remember { mutableStateOf(note) }
