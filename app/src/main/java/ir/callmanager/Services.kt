@@ -3,6 +3,7 @@ package ir.callmanager
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.media.MediaRecorder
 import android.net.Uri
 import android.provider.ContactsContract
 import android.telecom.Call
@@ -13,6 +14,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import java.io.File
 
 object CallHolder {
     var call by mutableStateOf<Call?>(null)
@@ -20,6 +22,35 @@ object CallHolder {
     var muted by mutableStateOf(false)
     var speaker by mutableStateOf(false)
     var service: InCallService? = null
+}
+
+object Recorder {
+    var recording by mutableStateOf(false)
+    private var rec: MediaRecorder? = null
+
+    fun dir(c: Context): File = File(c.getExternalFilesDir(null), "Recordings").apply { mkdirs() }
+
+    fun start(c: Context, number: String): Boolean {
+        if (recording) return true
+        return try {
+            val f = File(dir(c), "rec_${System.currentTimeMillis()}_${norm(number)}.m4a")
+            val r = MediaRecorder(c)
+            r.setAudioSource(MediaRecorder.AudioSource.MIC)
+            r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            r.setAudioEncodingBitRate(96000)
+            r.setAudioSamplingRate(44100)
+            r.setOutputFile(f.absolutePath)
+            r.prepare(); r.start()
+            rec = r; recording = true; true
+        } catch (e: Exception) { rec = null; recording = false; false }
+    }
+
+    fun stop() {
+        try { rec?.stop() } catch (e: Exception) { }
+        try { rec?.release() } catch (e: Exception) { }
+        rec = null; recording = false
+    }
 }
 
 fun lookupName(c: Context, number: String): String? {
@@ -35,7 +66,8 @@ class AppCallScreeningService : CallScreeningService() {
     override fun onScreenCall(details: Call.Details) {
         val incoming = details.callDirection == Call.Details.DIRECTION_INCOMING
         val number = details.handle?.schemeSpecificPart ?: ""
-        val reject = incoming && Db.get(this).shouldReject(number)
+        val reject = incoming && number.isNotBlank() &&
+            (Db.get(this).shouldReject(number) || (Prefs.rejectUnknown && lookupName(this, number) == null))
         val r = CallResponse.Builder()
         if (reject) r.setDisallowCall(true).setRejectCall(true).setSkipNotification(false).setSkipCallLog(false)
         respondToCall(details, r.build())
@@ -64,10 +96,11 @@ class AppInCallService : InCallService() {
             val nm = getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(NotificationChannel("incoming", "تماس ورودی", NotificationManager.IMPORTANCE_HIGH))
             val pi = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            val num = call.details.handle?.schemeSpecificPart ?: ""
             val n = Notification.Builder(this, "incoming")
                 .setSmallIcon(android.R.drawable.sym_call_incoming)
                 .setContentTitle("تماس ورودی")
-                .setContentText(lookupName(this, call.details.handle?.schemeSpecificPart ?: "") ?: call.details.handle?.schemeSpecificPart)
+                .setContentText(lookupName(this, num) ?: num)
                 .setCategory(Notification.CATEGORY_CALL)
                 .setFullScreenIntent(pi, true).setContentIntent(pi).setOngoing(true).build()
             nm.notify(1, n)
@@ -77,6 +110,7 @@ class AppInCallService : InCallService() {
     override fun onCallRemoved(call: Call) {
         call.unregisterCallback(cb)
         getSystemService(NotificationManager::class.java).cancel(1)
+        Recorder.stop()
         if (CallHolder.call == call) CallHolder.call = null
     }
 }
