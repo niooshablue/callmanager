@@ -1,10 +1,19 @@
 package ir.callmanager
 
 import android.app.AlarmManager
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Person
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.view.Gravity
+import android.view.View
+import android.view.WindowManager
+import android.widget.LinearLayout
+import android.widget.TextView
+import android.provider.Settings
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Handler
@@ -86,7 +95,7 @@ fun lookupName(c: Context, number: String): String? {
     return try {
         c.contentResolver.query(uri, arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME), null, null, null)
             ?.use { if (it.moveToFirst()) it.getString(0) else null }
-    } catch (e: SecurityException) { null }
+    } catch (e: Exception) { null }
 }
 
 // ---------------- اعلان‌ها ----------------
@@ -228,14 +237,18 @@ class AppCallScreeningService : CallScreeningService() {
         val number = details.handle?.schemeSpecificPart ?: ""
         val db = Db.get(this)
         val hasNumber = number.isNotBlank()
+        val allowMode = Prefs.on("allowGroups") && db.allowOnlyActive()
+        val allowedByGroup = hasNumber && db.inAllowGroup(number)
+        val blocked = hasNumber && Prefs.on("blockedNumbers") && db.isBlocked(number)
         val reject = incoming && (
-            (hasNumber && (
-                (Prefs.on("blockedNumbers") && db.isBlocked(number)) ||
+            blocked ||
+            if (allowMode) !allowedByGroup
+            else (hasNumber && (
                 (Prefs.on("rejectGroups") && db.inRejectGroup(number)) ||
                 (Prefs.rejectUnknown && lookupName(this, number) == null) ||
-                (quietNow() && !db.isFav(number)))) ||
-            // حالت «فقط گروه مجاز»: هر تماسی که عضو یک گروه مجاز نباشد رد می‌شود
-            (Prefs.on("allowGroups") && db.allowOnlyActive() && !db.inAllowGroup(number)))
+                (quietNow() && !db.isFav(number))
+            ))
+        )
         val r = CallResponse.Builder()
         if (reject) r.setDisallowCall(true).setRejectCall(true).setSkipNotification(false).setSkipCallLog(false)
         respondToCall(details, r.build())
@@ -245,6 +258,97 @@ class AppCallScreeningService : CallScreeningService() {
 class AppInCallService : InCallService() {
     private val handler = Handler(Looper.getMainLooper())
     private var beepRounds = 0
+    private var popupView: View? = null
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    /** پنجرهٔ شناور واقعی؛ فقط با مجوز صریح کاربر و هنگام باز بودن قفل گوشی */
+    private fun showIncomingPopup(call: Call): Boolean {
+        if (!Prefs.on("callPopup") || !Settings.canDrawOverlays(this)) return false
+        val keyguard = getSystemService(KeyguardManager::class.java)
+        if (keyguard?.isKeyguardLocked == true) return false
+        removeIncomingPopup()
+        return try {
+            val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+            val number = call.details.handle?.schemeSpecificPart ?: ""
+            val name = lookupName(this, number) ?: Jalali.fa(number).ifBlank { "شماره ناشناس" }
+            val root = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutDirection = View.LAYOUT_DIRECTION_RTL
+                setPadding(dp(18), dp(16), dp(18), dp(16))
+                background = GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                    intArrayOf(android.graphics.Color.rgb(31, 48, 70), android.graphics.Color.rgb(22, 32, 48))).apply {
+                    cornerRadius = dp(24).toFloat()
+                    setStroke(dp(1), android.graphics.Color.argb(70, 255, 255, 255))
+                }
+                elevation = dp(16).toFloat()
+            }
+            val heading = TextView(this).apply {
+                text = "تماس ورودی"
+                setTextColor(android.graphics.Color.rgb(170, 205, 255))
+                textSize = 12f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            }
+            val caller = TextView(this).apply {
+                text = name
+                setTextColor(android.graphics.Color.WHITE)
+                textSize = 20f
+                typeface = Typeface.create("sans-serif", Typeface.BOLD)
+                maxLines = 1
+            }
+            val phone = TextView(this).apply {
+                text = Jalali.fa(number)
+                setTextColor(android.graphics.Color.rgb(210, 220, 235))
+                textSize = 13f
+                setPadding(0, dp(3), 0, dp(12))
+            }
+            root.addView(heading)
+            root.addView(caller, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(5) })
+            root.addView(phone)
+            val actions = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                layoutDirection = View.LAYOUT_DIRECTION_LTR
+            }
+            fun action(label: String, color: Int, onClick: () -> Unit): TextView = TextView(this).apply {
+                text = label
+                gravity = Gravity.CENTER
+                textSize = 14f
+                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                setTextColor(android.graphics.Color.WHITE)
+                background = GradientDrawable().apply { setColor(color); cornerRadius = dp(16).toFloat() }
+                setPadding(dp(8), dp(13), dp(8), dp(13))
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { removeIncomingPopup(); onClick() }
+            }
+            actions.addView(action("رد تماس", android.graphics.Color.rgb(190, 55, 63)) { call.reject(false, null) },
+                LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(6) })
+            actions.addView(action("پاسخ", android.graphics.Color.rgb(32, 145, 91)) { call.answer(0) },
+                LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(6) })
+            root.addView(actions)
+            val params = WindowManager.LayoutParams(
+                minOf(resources.displayMetrics.widthPixels - dp(28), dp(440)).coerceAtLeast(dp(240)),
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                android.graphics.PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                y = dp(42)
+            }
+            wm.addView(root, params)
+            popupView = root
+            true
+        } catch (_: Exception) { popupView = null; false }
+    }
+
+    private fun removeIncomingPopup() {
+        val view = popupView ?: return
+        popupView = null
+        try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(view) } catch (_: Exception) { }
+    }
 
     private val cb = object : Call.Callback() {
         override fun onStateChanged(call: Call, state: Int) { update(null) }
@@ -252,11 +356,24 @@ class AppInCallService : InCallService() {
 
     private fun update(removed: Call?) {
         CallHolder.recompute(calls.filter { it !== removed })
+        if (CallHolder.call?.state != Call.STATE_RINGING) removeIncomingPopup()
         if (CallHolder.call != null) refresh()
     }
 
     override fun onCreate() { super.onCreate(); CallHolder.service = this; Notifs.channels(this) }
-    override fun onDestroy() { handler.removeCallbacksAndMessages(null); CallHolder.service = null; super.onDestroy() }
+    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        removeIncomingPopup()
+        CallHolder.service = null
+        // جلوگیری از باقی‌ماندن وضعیت تماس قبلی پس از قطع سرویس
+        CallHolder.call = null
+        CallHolder.waiting = null
+        CallHolder.held = null
+        CallHolder.state = Call.STATE_NEW
+        CallHolder.muted = false
+        Recorder.stop()
+        super.onDestroy()
+    }
 
     override fun onCallAudioStateChanged(a: CallAudioState) { applyAudio(a) }
 
@@ -296,11 +413,14 @@ class AppInCallService : InCallService() {
         val isWaiting = call.state == Call.STATE_RINGING && calls.any { it !== call }
         CallHolder.recompute(calls)
         try { callAudioState?.let { applyAudio(it) } } catch (e: Exception) { }
-        refresh()
         if (call.state == Call.STATE_RINGING) wakeScreen()
         if (isWaiting && Prefs.on("beeps")) beeps()
-        // علاوه بر اعلان تمام‌صفحه، مستقیم هم تلاش می‌کنیم صفحهٔ تماس باز شود
-        try { startActivity(Intent(this, InCallActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (e: Exception) { }
+        val popupShown = call.state == Call.STATE_RINGING && showIncomingPopup(call)
+        refresh()
+        // اگر پنجرهٔ شناور مجوز نداشته باشد، رابط استاندارد تماس را باز می‌کنیم.
+        if (Prefs.on("callPopup") && !popupShown) {
+            try { startActivity(Intent(this, InCallActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (e: Exception) { }
+        }
     }
 
     /** اعلان تماس: ورودی تمام‌صفحه؛ جاری غیرقابل‌بستن با دکمهٔ قطع */
@@ -329,7 +449,7 @@ class AppInCallService : InCallService() {
                     else -> "در حال مکالمه • برای بازگشت به صفحه تماس لمس کنید"
                 })
                 .setCategory(Notification.CATEGORY_CALL).setOngoing(true).setOnlyAlertOnce(true).setContentIntent(open)
-            if (ringing) b.setFullScreenIntent(open, true)
+            if (ringing && popupView == null) b.setFullScreenIntent(open, true)
             else {
                 val ct = call.details.connectTimeMillis
                 if (ct > 0) b.setUsesChronometer(true).setWhen(ct)
@@ -355,6 +475,7 @@ class AppInCallService : InCallService() {
     }
 
     override fun onCallRemoved(call: Call) {
+        removeIncomingPopup()
         call.unregisterCallback(cb)
         Recorder.stop()
         if (call.details.disconnectCause?.code == DisconnectCause.MISSED) {

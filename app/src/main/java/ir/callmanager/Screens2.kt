@@ -391,6 +391,7 @@ fun SettingsScreen() {
             MenuItem("🌙", "حالت مزاحم نشو", "رد خودکار تماس در ساعات مشخص") { path = "calls/quiet" }
             MenuItem("💬", "پیامک‌های آماده رد تماس", "متن‌هایی که هنگام زنگ‌خوردن برای رد تماس انتخاب می‌کنید") { path = "calls/replies" }
             MenuItem("🔒", "نمایش روی صفحه قفل", "مجوز اعلان تمام‌صفحه و روشن‌شدن صفحه") { path = "calls/lock" }
+            MenuItem("🪟", "پنجره شناور و اجرای پس‌زمینه", "کارت پاسخ سریع روی برنامه‌ها و مدیریت محدودیت باتری") { path = "calls/popup" }
         }
         "calls/sim" -> SubPage("سیم‌کارت‌ها", { path = "calls" }) {
             SectionCard("سیم‌کارت‌های شناسایی‌شده") {
@@ -446,7 +447,7 @@ fun SettingsScreen() {
                     Button({ Prefs.quickReplies = list + "پیام جدید"; Prefs.saveReplies() }) { Text("افزودن پیام") }
                     TextButton({ Prefs.quickReplies = Prefs.defaultReplies; Prefs.saveReplies() }) { Text("بازگشت به پیش‌فرض") }
                 }
-                Text("حداکثر ۱۶۰ نویسه. این پیام‌ها هنگام زنگ‌خوردن تماس، بالای دکمه‌های پاسخ و رد نمایش داده می‌شوند و با زدن روی هرکدام، تماس رد و پیامک ارسال می‌شود.",
+                Text("حداکثر ۱۶۰ نویسه. هنگام تماس ورودی، ابتدا فهرست پیام‌ها باز می‌شود؛ سپس پس از انتخاب پیام و تأیید نهایی، تماس رد و پیامک ارسال خواهد شد.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
@@ -468,6 +469,51 @@ fun SettingsScreen() {
                 Text("اگر گوشی باز و در حال استفاده باشد، ممکن است اندروید یا سازندهٔ گوشی به‌جای تمام‌صفحه یک اعلان بالای صفحه نشان دهد.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+        }
+        "calls/popup" -> SubPage("پنجره شناور و اجرای پس‌زمینه", { path = "calls" }) {
+            val pm = ctx.getSystemService(android.os.PowerManager::class.java)
+            val batteryOk = Build.VERSION.SDK_INT < 23 || pm.isIgnoringBatteryOptimizations(ctx.packageName)
+            val overlayOk = Build.VERSION.SDK_INT < 23 || android.provider.Settings.canDrawOverlays(ctx)
+            SectionCard("نمایش پنجره تماس") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("نمایش کارت شناور هنگام استفاده از برنامه‌های دیگر")
+                        Text("یک کارت کوچک با نام تماس‌گیرنده و دکمه‌های پاسخ و رد روی برنامه فعلی نمایش داده می‌شود.", fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(Prefs.on("callPopup"), { Prefs.setFlag("callPopup", it) })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("مجوز نمایش روی سایر پنجره‌ها")
+                        Text(if (overlayOk) "مجوز سیستم فعال است" else "برای پنجره شناور، مجوز سیستم لازم است", fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Text(if (overlayOk) "فعال" else "غیرفعال", color = if (overlayOk) Color(0xFF2E9F5B) else MaterialTheme.colorScheme.error)
+                }
+                if (!overlayOk) Button(onClick = {
+                    try { ctx.startActivity(Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:" + ctx.packageName))) } catch (_: Exception) { }
+                }) { Text("اعطای مجوز نمایش روی برنامه‌ها") }
+            }
+            SectionCard("محدودیت باتری") {
+                Text(if (batteryOk) "✅ برنامه از محدودیت بهینه‌سازی باتری مستثنا است."
+                    else "⚠️ برای دریافت مطمئن تماس در پس‌زمینه، محدودیت بهینه‌سازی باتری را بررسی کنید.")
+                if (!batteryOk && Build.VERSION.SDK_INT >= 23) Button(onClick = {
+                    try { ctx.startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:" + ctx.packageName))) } catch (_: Exception) {
+                        ctx.startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                    }
+                }) { Text("درخواست عدم بهینه‌سازی باتری") }
+                OutlinedButton(onClick = {
+                    ctx.startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:" + ctx.packageName)))
+                }) { Text("تنظیمات باتری و اجرای خودکار برنامه") }
+                Text("در گوشی‌های شیائومی، هواوی، اوپو و برخی مدل‌های سامسونگ، علاوه بر این گزینه باید اجرای خودکار و فعالیت پس‌زمینه را نیز در تنظیمات سازنده فعال کنید.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Text("با فعال بودن این گزینه و اعطای مجوز نمایش روی برنامه‌ها، هنگام باز بودن قفل گوشی یک کارت شناور با دکمه‌های پاسخ و رد نمایش داده می‌شود. روی صفحه قفل از رابط استاندارد تماس و اعلان تمام‌صفحه اندروید استفاده می‌شود؛ رفتار نهایی به نسخه اندروید و سیاست سازنده گوشی وابسته است.",
+                fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         "notif" -> SubPage("اعلان‌ها", back) {
             SectionCard("تماس‌های بی‌پاسخ") {
@@ -528,7 +574,7 @@ fun SettingsScreen() {
         "data/rec" -> SubPage("مکالمات ضبط‌شده", { path = "data" }) { RecordingsContent() }
         else -> SubPage("دربارهٔ برنامه", back) {
             SectionCard("مدیریت تماس") {
-                Text("نسخه ۰٫۶")
+                Text("نسخه ۰٫۸")
                 Text("شماره‌گیر، تاریخچه، مخاطبین، یادداشت هنگام تماس، گروه‌بندی و رد خودکار تماس.", fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }

@@ -104,25 +104,24 @@ fun Root(initialDial: String) {
             }
         ) { pad ->
             Column(Modifier.padding(pad).fillMaxSize()) {
-                if (!ok) {
-                    Banner("برای نمایش تماس‌ها و مخاطبین، دسترسی‌ها لازم است.", "اعطای دسترسی") { permLauncher.launch(ask) }
-                } else {
-                    if (!isDialer) Banner("برای نمایش یادداشت هنگام تماس، برنامه را «شماره‌گیر پیش‌فرض» کنید.", "فعال‌سازی") {
-                        roleLauncher.launch(rm.createRequestRoleIntent(RoleManager.ROLE_DIALER))
-                    }
-                    if (!isScreener) Banner("برای رد خودکار تماس، دسترسی «فیلتر تماس» لازم است.", "فعال‌سازی") {
-                        roleLauncher.launch(rm.createRequestRoleIntent(RoleManager.ROLE_CALL_SCREENING))
-                    }
-                    if (!fsiOk) Banner("برای نمایش صفحه تماس روی صفحه قفل، مجوز «اعلان تمام‌صفحه» لازم است.", "اجازه") {
-                        roleLauncher.launch(Intent("android.settings.MANAGE_APP_USE_FULL_SCREEN_INTENT", Uri.parse("package:" + ctx.packageName)))
-                    }
-                    when (tab) {
-                        0 -> RecentsScreen { detail = it }
-                        1 -> DialerScreen(initialDial) { detail = it }
-                        2 -> ContactsScreen { detail = it }
-                        3 -> GroupsScreen()
-                        else -> SettingsScreen()
-                    }
+                if (!ok) Banner("برای نمایش کامل تاریخچه و مخاطبین، دسترسی‌های لازم را فعال کنید. تنظیمات برنامه همچنان در دسترس است.", "اعطای دسترسی") {
+                    permLauncher.launch(ask)
+                }
+                if (ok && !isDialer) Banner("برای مدیریت کامل تماس و نمایش صفحه تماس، برنامه را «شماره‌گیر پیش‌فرض» کنید.", "فعال‌سازی") {
+                    roleLauncher.launch(rm.createRequestRoleIntent(RoleManager.ROLE_DIALER))
+                }
+                if (ok && !isScreener) Banner("برای رد خودکار تماس، دسترسی «فیلتر تماس» لازم است.", "فعال‌سازی") {
+                    roleLauncher.launch(rm.createRequestRoleIntent(RoleManager.ROLE_CALL_SCREENING))
+                }
+                if (ok && !fsiOk) Banner("برای نمایش صفحه تماس روی صفحه قفل، مجوز «اعلان تمام‌صفحه» لازم است.", "اجازه") {
+                    roleLauncher.launch(Intent("android.settings.MANAGE_APP_USE_FULL_SCREEN_INTENT", Uri.parse("package:" + ctx.packageName)))
+                }
+                when (tab) {
+                    0 -> RecentsScreen { detail = it }
+                    1 -> DialerScreen(initialDial) { detail = it }
+                    2 -> ContactsScreen { detail = it }
+                    3 -> GroupsScreen()
+                    else -> SettingsScreen()
                 }
             }
         }

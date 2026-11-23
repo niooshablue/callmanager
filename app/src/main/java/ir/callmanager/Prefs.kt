@@ -55,7 +55,8 @@ object Prefs {
         "allowGroups" to "حالت «فقط گروه مجاز»",
         "blockedNumbers" to "رد خودکار شماره‌های مسدود",
         "favorites" to "علاقه‌مندی‌ها در شماره‌گیر",
-        "dialerSuggest" to "پیشنهاد مخاطب هنگام شماره‌گیری"
+        "dialerSuggest" to "پیشنهاد مخاطب هنگام شماره‌گیری",
+        "callPopup" to "نمایش پنجره تماس هنگام استفاده از برنامه‌های دیگر"
     )
     var quietOn by mutableStateOf(false)
     var quietStart by mutableIntStateOf(22)
