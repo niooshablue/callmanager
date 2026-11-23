@@ -62,7 +62,13 @@ class InCallActivity : ComponentActivity() {
             AppTheme {
                 val ctx = LocalContext.current
                 val call = CallHolder.call
-                LaunchedEffect(call) { if (call == null) finish() }
+                val liveState = CallHolder.state
+                LaunchedEffect(call, liveState) {
+                    if (call == null || liveState == Call.STATE_DISCONNECTING || liveState == Call.STATE_DISCONNECTED) {
+                        delay(250)
+                        if (CallHolder.call == null || CallHolder.state == Call.STATE_DISCONNECTING || CallHolder.state == Call.STATE_DISCONNECTED) finish()
+                    }
+                }
                 if (call != null) {
                     if (Prefs.callDark || Prefs.callTheme == 2) {
                         var dcs = dynamicDarkColorScheme(ctx)

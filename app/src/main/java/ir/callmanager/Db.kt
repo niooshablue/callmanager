@@ -60,7 +60,7 @@ class Db private constructor(c: Context) : SQLiteOpenHelper(c, "app.db", null, 5
     }
 
     fun groups(): List<Group> = readableDatabase.rawQuery("SELECT id,name,reject,allow FROM groups_t ORDER BY id", null).use {
-        val l = mutableListOf<Group>(); while (it.moveToNext()) l += Group(it.getInt(0), it.getString(1), it.getInt(2) == 1, it.getInt(3) == 1); l
+        val l = mutableListOf<Group>(); while (it.moveToNext()) l += Group(it.getInt(0), it.getString(1) ?: "", it.getInt(2) == 1, it.getInt(3) == 1); l
     }
 
     fun addGroup(name: String) { writableDatabase.execSQL("INSERT INTO groups_t(name) VALUES(?)", arrayOf(name.trim())) }

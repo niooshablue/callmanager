@@ -9,6 +9,8 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontWeight
 
 object Prefs {
     private var sp: SharedPreferences? = null
@@ -109,12 +111,14 @@ object Prefs {
         sp?.edit()?.putInt("missedCount", missedCount)?.putString("missedLabels", missedLabels)?.putString("missedLast", missedLast)?.apply()
     }
 
-    val fontNames = listOf("پیش‌فرض سیستم", "Sans Serif", "Serif", "Monospace", "Cursive")
+    // فونت‌های فارسی/عربیِ همراه برنامه؛ نام‌ها بر اساس خانواده واقعی فونت هستند.
+    // این‌ها جایگزین‌های متن‌باز نزدیک به سبک‌های رایج‌اند، نه فایل‌های تجاری Nazanin/Vazir/Yekan.
+    val fontNames = listOf("پیش‌فرض سیستم", "وزیری‌مانند · Noto Sans Arabic", "یکان‌مانند · Noto Kufi Arabic", "نازنین‌مانند · Noto Naskh Arabic", "امیری · Amiri")
     fun family(): FontFamily = when (font) {
-        1 -> FontFamily.SansSerif
-        2 -> FontFamily.Serif
-        3 -> FontFamily.Monospace
-        4 -> FontFamily.Cursive
+        1 -> FontFamily(Font(R.font.noto_sans_arabic_regular, FontWeight.Normal), Font(R.font.noto_sans_arabic_bold, FontWeight.Bold))
+        2 -> FontFamily(Font(R.font.noto_kufi_arabic_regular, FontWeight.Normal), Font(R.font.noto_kufi_arabic_bold, FontWeight.Bold))
+        3 -> FontFamily(Font(R.font.noto_naskh_arabic_regular, FontWeight.Normal), Font(R.font.noto_naskh_arabic_bold, FontWeight.Bold))
+        4 -> FontFamily(Font(R.font.amiri_regular, FontWeight.Normal), Font(R.font.amiri_bold, FontWeight.Bold))
         else -> FontFamily.Default
     }
 

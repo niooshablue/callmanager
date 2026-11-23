@@ -2,7 +2,6 @@
 package ir.callmanager
 
 import android.app.NotificationManager
-import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -49,7 +48,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Calendar
-import java.text.SimpleDateFormat
 import java.util.Locale
 
 // ---------------- جزئیات مخاطب ----------------
@@ -68,6 +66,7 @@ fun DetailScreen(t: DetailTarget, onBack: () -> Unit) {
     var picking by remember { mutableStateOf(false) }
     var fav by remember { mutableStateOf(db.isFav(num)) }
     var remindDlg by remember { mutableStateOf(false) }
+    var showJalaliDatePicker by remember { mutableStateOf(false) }
     var reminderTick by remember { mutableIntStateOf(0) }
     val activeReminder = remember(num, reminderTick) { Reminders.all(ctx).firstOrNull { norm(it.number) == norm(num) } }
     var confirmDel by remember { mutableStateOf<List<Long>?>(null) }
@@ -140,7 +139,7 @@ fun DetailScreen(t: DetailTarget, onBack: () -> Unit) {
                         Spacer(Modifier.width(8.dp))
                         Column(Modifier.weight(1f)) {
                             Text("تماس با این مخاطب")
-                            Text(SimpleDateFormat("yyyy/MM/dd  HH:mm", Locale.getDefault()).format(java.util.Date(activeReminder.atMillis)),
+                            Text(Jalali.format(activeReminder.atMillis),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                         }
                         IconButton({ Reminders.delete(ctx, num, activeReminder.atMillis); reminderTick++; Toast.makeText(ctx, "یادآوری حذف شد", Toast.LENGTH_SHORT).show() }) {
@@ -223,20 +222,7 @@ fun DetailScreen(t: DetailTarget, onBack: () -> Unit) {
         }
     }
     if (remindDlg) {
-        fun chooseCustomDateTime() {
-            val now = Calendar.getInstance()
-            DatePickerDialog(ctx, { _, year, month, day ->
-                val date = Calendar.getInstance().apply { set(year, month, day) }
-                TimePickerDialog(ctx, { _, hour, minute ->
-                    date.set(Calendar.HOUR_OF_DAY, hour); date.set(Calendar.MINUTE, minute); date.set(Calendar.SECOND, 0); date.set(Calendar.MILLISECOND, 0)
-                    if (date.timeInMillis > System.currentTimeMillis()) {
-                        Reminders.schedule(ctx, num, t.name, date.timeInMillis); reminderTick++
-                        Toast.makeText(ctx, "یادآوری ثبت شد", Toast.LENGTH_SHORT).show()
-                    } else Toast.makeText(ctx, "زمان انتخابی باید در آینده باشد", Toast.LENGTH_LONG).show()
-                    remindDlg = false
-                }, now.get(Calendar.HOUR_OF_DAY), now.get(Calendar.MINUTE), true).show()
-            }, now.get(Calendar.YEAR), now.get(Calendar.MONTH), now.get(Calendar.DAY_OF_MONTH)).show()
-        }
+        fun chooseCustomDateTime() { showJalaliDatePicker = true }
         AlertDialog(onDismissRequest = { remindDlg = false }, title = { Text("یادآوری تماس با " + t.name.ifBlank { Jalali.fa(num) }) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -251,6 +237,23 @@ fun DetailScreen(t: DetailTarget, onBack: () -> Unit) {
                 }
             }, confirmButton = {}, dismissButton = { TextButton({ remindDlg = false }) { Text("انصراف") } })
     }
+    if (showJalaliDatePicker) JalaliDatePickerDialog(
+        onDismiss = { showJalaliDatePicker = false },
+        onDateSelected = { jy, jm, jd ->
+            val (gy, gm, gd) = Jalali.toGregorian(jy, jm, jd)
+            val date = Calendar.getInstance().apply { set(gy, gm - 1, gd, 0, 0, 0); set(Calendar.MILLISECOND, 0) }
+            val now = Calendar.getInstance()
+            TimePickerDialog(ctx, { _, hour, minute ->
+                date.set(Calendar.HOUR_OF_DAY, hour); date.set(Calendar.MINUTE, minute)
+                if (date.timeInMillis > System.currentTimeMillis()) {
+                    Reminders.schedule(ctx, num, t.name, date.timeInMillis); reminderTick++
+                    Toast.makeText(ctx, "یادآوری ثبت شد", Toast.LENGTH_SHORT).show()
+                } else Toast.makeText(ctx, "زمان انتخابی باید در آینده باشد", Toast.LENGTH_LONG).show()
+            }, now.get(Calendar.HOUR_OF_DAY), now.get(Calendar.MINUTE), true).show()
+            showJalaliDatePicker = false
+            remindDlg = false
+        }
+    )
     if (picking) ContactPicker({ c -> ref = Pair(c.number, c.name); picking = false }, { picking = false })
     confirmDel?.let { ids ->
         AlertDialog(onDismissRequest = { confirmDel = null }, title = { Text("حذف از تاریخچه") },
@@ -258,6 +261,53 @@ fun DetailScreen(t: DetailTarget, onBack: () -> Unit) {
             confirmButton = { TextButton({ deleter(ids); confirmDel = null }) { Text("حذف", color = Color(0xFFD32F2F)) } },
             dismissButton = { TextButton({ confirmDel = null }) { Text("انصراف") } })
     }
+}
+
+@Composable
+fun JalaliDatePickerDialog(onDismiss: () -> Unit, onDateSelected: (Int, Int, Int) -> Unit) {
+    val today = Calendar.getInstance().timeInMillis
+    val (todayYear, todayMonth, todayDay) = Jalali.parts(today)
+    var year by remember { mutableIntStateOf(todayYear) }
+    var month by remember { mutableIntStateOf(todayMonth) }
+    var selectedDay by remember { mutableIntStateOf(todayDay) }
+    val first = remember(year, month) {
+        val (gy, gm, gd) = Jalali.toGregorian(year, month, 1)
+        Calendar.getInstance().apply { set(gy, gm - 1, gd) }.get(Calendar.DAY_OF_WEEK) % 7
+    }
+    val days = Jalali.daysInMonth(year, month)
+    AlertDialog(onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { if (month == 1) { month = 12; year-- } else month--; selectedDay = 1 }) { Icon(Icons.Default.ChevronRight, "ماه قبل") }
+                Text("${Jalali.months[month - 1]} ${Jalali.fa(year)}", Modifier.weight(1f), textAlign = TextAlign.Center, fontWeight = FontWeight.Bold)
+                IconButton(onClick = { if (month == 12) { month = 1; year++ } else month++; selectedDay = 1 }) { Icon(Icons.Default.ChevronLeft, "ماه بعد") }
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Row(Modifier.fillMaxWidth()) {
+                    listOf("ش", "ی", "د", "س", "چ", "پ", "ج").forEach { Text(it, Modifier.weight(1f), textAlign = TextAlign.Center, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold) }
+                }
+                val cells = List(first) { 0 } + (1..days).toList()
+                cells.chunked(7).forEach { week ->
+                    Row(Modifier.fillMaxWidth()) {
+                        week.forEach { day ->
+                            Box(Modifier.weight(1f).height(38.dp), contentAlignment = Alignment.Center) {
+                                if (day > 0) {
+                                    if (day == selectedDay) FilledTonalButton(onClick = { selectedDay = day },
+                                        modifier = Modifier.size(36.dp), contentPadding = PaddingValues(0.dp)) { Text(Jalali.fa(day), fontSize = 12.sp) }
+                                    else TextButton(onClick = { selectedDay = day }, modifier = Modifier.size(36.dp), contentPadding = PaddingValues(0.dp)) { Text(Jalali.fa(day), fontSize = 12.sp) }
+                                }
+                            }
+                        }
+                        repeat(7 - week.size) { Spacer(Modifier.weight(1f)) }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onDateSelected(year, month, selectedDay) }) { Text("تأیید تاریخ") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("انصراف") } }
+    )
 }
 
 @Composable
@@ -417,8 +467,12 @@ fun SettingsScreen() {
                 Slider(Prefs.fontScale, { Prefs.fontScale = it }, valueRange = 0.8f..1.6f, onValueChangeFinished = { Prefs.save() })
             }
             SectionCard("فونت نوشته‌ها") {
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Prefs.fontNames.forEachIndexed { i, n -> FilterChip(Prefs.font == i, { Prefs.font = i; Prefs.save() }, label = { Text(n) }) }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Prefs.fontNames.forEachIndexed { i, n ->
+                        FilterChip(Prefs.font == i, { Prefs.font = i; Prefs.save() }, label = { Text(n) })
+                    }
+                    Text("فونت‌های همراه برنامه متن‌باز هستند و برای نمایش فارسی بهینه شده‌اند. نام‌های وزیری‌مانند، یکان‌مانند و نازنین‌مانند توصیف سبک بصری‌اند و به معنی استفاده از فایل تجاری همان فونت‌ها نیست.",
+                        fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             SectionCard("نمایش اعداد") {
@@ -647,7 +701,7 @@ fun ReminderListContent() {
                     Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
                         Text(Jalali.fa(r.number), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(SimpleDateFormat("yyyy/MM/dd  HH:mm", Locale.getDefault()).format(java.util.Date(r.atMillis)), fontWeight = FontWeight.Medium)
+                        Text(Jalali.format(r.atMillis), fontWeight = FontWeight.Medium)
                     }
                     IconButton({ Reminders.delete(ctx, r.number, r.atMillis); tick++ }) {
                         Icon(Icons.Default.DeleteOutline, "حذف یادآوری", tint = MaterialTheme.colorScheme.error)

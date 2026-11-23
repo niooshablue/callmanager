@@ -50,13 +50,16 @@ object CallHolder {
     var service: InCallService? = null
 
     fun recompute(list: List<Call>) {
-        val primary = list.firstOrNull {
+        // تماس قطع‌شده را هرگز به‌عنوان تماس جاری انتخاب نکن؛ بعضی نسخه‌های
+        // Telecom برای مدت کوتاهی آن را در calls نگه می‌دارند.
+        val live = list.filter { it.state != Call.STATE_DISCONNECTED && it.state != Call.STATE_DISCONNECTING }
+        val primary = live.firstOrNull {
             it.state == Call.STATE_ACTIVE || it.state == Call.STATE_DIALING || it.state == Call.STATE_CONNECTING || it.state == Call.STATE_PULLING_CALL
-        } ?: list.firstOrNull { it.state == Call.STATE_RINGING } ?: list.firstOrNull()
+        } ?: live.firstOrNull { it.state == Call.STATE_RINGING } ?: live.firstOrNull { it.state == Call.STATE_HOLDING }
         call = primary
         state = primary?.state ?: Call.STATE_NEW
-        waiting = if (primary != null && primary.state != Call.STATE_RINGING) list.firstOrNull { it.state == Call.STATE_RINGING && it !== primary } else null
-        held = list.firstOrNull { it.state == Call.STATE_HOLDING && it !== primary }
+        waiting = if (primary != null && primary.state != Call.STATE_RINGING) live.firstOrNull { it.state == Call.STATE_RINGING && it !== primary } else null
+        held = live.firstOrNull { it.state == Call.STATE_HOLDING && it !== primary }
     }
 }
 
@@ -423,7 +426,11 @@ class AppInCallService : InCallService() {
     private fun update(removed: Call?) {
         CallHolder.recompute(calls.filter { it !== removed })
         if (CallHolder.call?.state != Call.STATE_RINGING) removeIncomingPopup()
-        if (CallHolder.call != null) refresh()
+        if (CallHolder.call != null) refresh() else {
+            removeIncomingPopup()
+            try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) { }
+            try { getSystemService(NotificationManager::class.java).cancel(Notifs.ID_CALL) } catch (_: Exception) { }
+        }
     }
 
     override fun onCreate() { super.onCreate(); CallHolder.service = this; Notifs.channels(this) }

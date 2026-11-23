@@ -41,6 +41,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.filter
 
@@ -150,6 +152,7 @@ fun RecentsScreen(onOpen: (DetailTarget) -> Unit) {
     var groupFilter by remember { mutableIntStateOf(0) }
     var simFilter by remember { mutableStateOf("") }
     var query by remember { mutableStateOf("") }
+    var searchOpen by remember { mutableStateOf(false) }
     var limit by remember(filter, query) { mutableIntStateOf(30) }
     val selected = remember { mutableStateListOf<Long>() }
     var selMode by remember { mutableStateOf(false) }
@@ -157,6 +160,7 @@ fun RecentsScreen(onOpen: (DetailTarget) -> Unit) {
     val all = Repo.calls
     val groups = remember(dbTick.intValue) { db.groups() }
     val members = remember(dbTick.intValue) { db.allMembers() }
+    val reminderNumbers = remember(dbTick.intValue, Repo.calls) { Reminders.all(ctx).map { norm(it.number) }.toSet() }
     val sims = Repo.sims
     val list = remember(all, filter, query, groupFilter, simFilter, members) {
         val typed = when (filter) {
@@ -214,19 +218,24 @@ fun RecentsScreen(onOpen: (DetailTarget) -> Unit) {
                 IconButton({ if (selected.isNotEmpty()) confirm = selected.toList() }) { Icon(Icons.Default.Delete, "حذف", tint = Color(0xFFD32F2F)) }
             }
         } else {
-            OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), singleLine = true,
-                placeholder = { Text("جستجو در تاریخچه (نام یا شماره)") }, leadingIcon = { Icon(Icons.Default.Search, null) },
-                shape = RoundedCornerShape(28.dp))
-            Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("همه", "بی‌پاسخ", "ورودی", "خروجی").forEachIndexed { i, t -> FilterChip(filter == i, { filter = i }, label = { Text(t) }) }
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                IconButton(onClick = { searchOpen = !searchOpen }) {
+                    Icon(if (searchOpen) Icons.Default.Close else Icons.Default.Search, if (searchOpen) "بستن جستجو" else "جستجو")
+                }
+                CompactFilter("نوع", listOf("همه" to "0", "بی‌پاسخ" to "1", "ورودی" to "2", "خروجی" to "3"), filter.toString()) { filter = it.toInt() }
+                if (groups.isNotEmpty()) CompactFilter("گروه", listOf("همه گروه‌ها" to "0") + groups.map { it.name to it.id.toString() }, groupFilter.toString()) { groupFilter = it.toInt() }
+                if (sims.size > 1) CompactFilter("سیم‌کارت", listOf("همه" to "") + sims.map { "SIM ${Jalali.fa(it.index)}" to it.handle.id }, simFilter) { simFilter = it }
             }
-            if (groups.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 3.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(groupFilter == 0, { groupFilter = 0 }, label = { Text("همه گروه‌ها") })
-                groups.forEach { g -> FilterChip(groupFilter == g.id, { groupFilter = g.id }, label = { Text(g.name) }) }
-            }
-            if (sims.size > 1) Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 3.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(simFilter.isBlank(), { simFilter = "" }, label = { Text("همه سیم‌کارت‌ها") })
-                sims.forEach { sim -> FilterChip(simFilter == sim.handle.id, { simFilter = sim.handle.id }, label = { Text("SIM ${Jalali.fa(sim.index)}") }) }
+            if (searchOpen) Popup(onDismissRequest = { searchOpen = false }, alignment = Alignment.TopCenter,
+                properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = true)) {
+                Surface(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+                    shape = RoundedCornerShape(20.dp), tonalElevation = 8.dp, shadowElevation = 12.dp) {
+                    OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(8.dp), singleLine = true,
+                        placeholder = { Text("جستجوی نام یا شماره") }, leadingIcon = { Icon(Icons.Default.Search, null) },
+                        trailingIcon = { IconButton({ query = "" }) { Icon(Icons.Default.Clear, "پاک‌کردن") } },
+                        shape = RoundedCornerShape(16.dp))
+                }
             }
         }
         if (list.isEmpty()) Empty(if (Repo.loadingContacts) "در حال بارگذاری…" else "تماسی وجود ندارد")
@@ -238,7 +247,7 @@ fun RecentsScreen(onOpen: (DetailTarget) -> Unit) {
                 }
                 items(rows, key = { it.id }) { r ->
                     SwipeRow(if (selMode) 0 else Prefs.hSwL, if (selMode) 0 else Prefs.hSwR, { a -> perform(a, r) }) {
-                        CallRow(r, selMode, r.id in selected,
+                        CallRow(r, selMode, r.id in selected, hasReminder = norm(r.number) in reminderNumbers,
                             onTap = { if (selMode) toggle(r) else perform(Prefs.hTap, r) },
                             onLong = { if (selMode) toggle(r) else perform(Prefs.hLong, r) })
                     }
@@ -255,7 +264,26 @@ fun RecentsScreen(onOpen: (DetailTarget) -> Unit) {
 }
 
 @Composable
-fun CallRow(r: Rec, selMode: Boolean, isSel: Boolean, onTap: () -> Unit, onLong: () -> Unit) {
+private fun CompactFilter(label: String, options: List<Pair<String, String>>, selected: String, onSelect: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    val selectedLabel = options.firstOrNull { it.second == selected }?.first ?: label
+    Box {
+        TextButton(onClick = { expanded = true }, contentPadding = PaddingValues(horizontal = 7.dp, vertical = 4.dp)) {
+            Text(selectedLabel, fontSize = 11.sp, maxLines = 1)
+            Icon(Icons.Default.ArrowDropDown, null, modifier = Modifier.size(17.dp))
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { (title, value) ->
+                DropdownMenuItem(text = { Text(title, fontSize = 13.sp) },
+                    onClick = { onSelect(value); expanded = false },
+                    leadingIcon = if (value == selected) ({ Icon(Icons.Default.Check, null) }) else null)
+            }
+        }
+    }
+}
+
+@Composable
+fun CallRow(r: Rec, selMode: Boolean, isSel: Boolean, hasReminder: Boolean = false, onTap: () -> Unit, onLong: () -> Unit) {
     val ctx = LocalContext.current
     val cs = MaterialTheme.colorScheme
     val title = r.name.ifBlank { Repo.names[norm(r.number)] ?: "" }.ifBlank { Jalali.fa(r.number).ifBlank { "ناشناس" } }
@@ -269,7 +297,10 @@ fun CallRow(r: Rec, selMode: Boolean, isSel: Boolean, onTap: () -> Unit, onLong:
             if (selMode) Checkbox(isSel, null) else CallTypeBadge(r.type)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(title, fontWeight = FontWeight.SemiBold, maxLines = 1, color = if (r.type == 3) Color(0xFFE53935) else cs.onSurface)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(title, fontWeight = FontWeight.SemiBold, maxLines = 1, color = if (r.type == 3) Color(0xFFE53935) else cs.onSurface)
+                    if (hasReminder) { Spacer(Modifier.width(5.dp)); Icon(Icons.Default.NotificationsActive, "یادآوری فعال", tint = cs.primary, modifier = Modifier.size(15.dp)) }
+                }
                 Text(Jalali.time(r.date) + dur + sim, fontSize = 12.sp, color = cs.onSurfaceVariant)
             }
             if (!selMode) IconButton({ callNumber(ctx, r.number) }) { Handset(cs.primary, 22.dp) }
@@ -328,9 +359,15 @@ fun DialerScreen(initial: String, onOpen: (DetailTarget) -> Unit) {
                 if (num.isNotBlank()) IconButton({
                     ctx.startActivity(Intent(Intent.ACTION_INSERT, ContactsContract.Contacts.CONTENT_URI).putExtra(ContactsContract.Intents.Insert.PHONE, num))
                 }) { Icon(Icons.Default.Add, "ذخیره") } else Spacer(Modifier.size(48.dp))
-                Text(Jalali.fa(num), Modifier.weight(1f), fontSize = 30.sp, textAlign = TextAlign.Center, maxLines = 1)
+                OutlinedTextField(
+                    value = num,
+                    onValueChange = { num = Jalali.en(it).filter { ch -> ch.isDigit() || ch == '+' || ch == '*' || ch == '#' || ch == ' ' || ch == '-' } },
+                    modifier = Modifier.weight(1f), singleLine = true,
+                    textStyle = MaterialTheme.typography.headlineSmall.copy(textAlign = TextAlign.Center),
+                    placeholder = { Text("شماره را وارد یا جای‌گذاری کنید", fontSize = 12.sp) }
+                )
                 Box(Modifier.size(48.dp).clip(CircleShape).combinedClickable(onClick = { num = num.dropLast(1) }, onLongClick = { num = "" }),
-                    contentAlignment = Alignment.Center) { Icon(Icons.Default.Clear, "حذف") }
+                    contentAlignment = Alignment.Center) { Icon(Icons.Default.Backspace, "حذف رقم") }
             }
             Keypad(keyHeight = 54.dp, onKey = { num += it }, onLongZero = { num += "+" })
             Spacer(Modifier.height(6.dp))
@@ -428,12 +465,17 @@ fun ContactsScreen(onOpen: (DetailTarget) -> Unit) {
 @Composable
 fun GroupsScreen() {
     val ctx = LocalContext.current; val db = remember { Db.get(ctx) }
-    var groups by remember { mutableStateOf(db.groups()) }
+    var loadError by remember { mutableStateOf(false) }
+    var groups by remember { mutableStateOf(try { db.groups() } catch (_: Exception) { loadError = true; emptyList() }) }
     var adding by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf("") }
-    val members = remember(groups, dbTick.intValue) { db.allMembers() }
+    val members = remember(groups, dbTick.intValue) { try { db.allMembers() } catch (_: Exception) { loadError = true; emptyMap() } }
     val cs = MaterialTheme.colorScheme
-    fun reload() { groups = db.groups(); dbTick.intValue++ }
+    fun reload() {
+        try { groups = db.groups(); loadError = false }
+        catch (_: Exception) { loadError = true; Toast.makeText(ctx, "خواندن گروه‌ها از پایگاه داده ناموفق بود", Toast.LENGTH_LONG).show() }
+        dbTick.intValue++
+    }
     Column {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("گروه‌های مخاطبین", Modifier.weight(1f), fontSize = 18.sp, fontWeight = FontWeight.Bold)
@@ -441,6 +483,10 @@ fun GroupsScreen() {
         }
         Text("برای افزودن مخاطب به گروه، روی مخاطب بزنید و گروه را انتخاب کنید.",
             Modifier.padding(horizontal = 16.dp), fontSize = 12.sp, color = cs.onSurfaceVariant)
+        if (loadError) Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp), colors = CardDefaults.cardColors(containerColor = cs.errorContainer)) {
+            Text("خواندن اطلاعات گروه‌ها با خطا مواجه شد. یک‌بار صفحه را دوباره باز کنید؛ اگر مشکل ادامه داشت، پایگاه داده برنامه نیاز به بررسی دارد.",
+                Modifier.padding(12.dp), color = cs.onErrorContainer, fontSize = 12.sp)
+        }
         if (groups.any { it.allowOnly } && Prefs.on("allowGroups")) {
             Card(Modifier.fillMaxWidth().padding(12.dp, 8.dp), shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = cs.tertiaryContainer)) {
@@ -448,8 +494,10 @@ fun GroupsScreen() {
                     Modifier.padding(12.dp), fontSize = 13.sp, color = cs.onTertiaryContainer)
             }
         }
-        LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(groups) { g ->
+        // این صفحه داخل SubPage و یک اسکرول عمودی قرار دارد؛ LazyColumn تو‌در‌تو
+        // با ارتفاع نامحدود باعث IllegalStateException و بسته‌شدن برنامه می‌شد.
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            groups.forEach { g ->
                 val cnt = members.values.count { g.id in it }
                 Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = cs.surfaceContainerHigh)) {
                     Column(Modifier.padding(14.dp)) {
@@ -457,7 +505,7 @@ fun GroupsScreen() {
                             Avatar(g.name, 46.dp)
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
-                                Text(g.name, fontWeight = FontWeight.Bold)
+                                Text(g.name.ifBlank { "گروه بدون نام" }, fontWeight = FontWeight.Bold)
                                 Text(Jalali.fa("$cnt عضو"), fontSize = 12.sp, color = cs.onSurfaceVariant)
                             }
                             IconButton({ db.deleteGroup(g.id); reload() }) { Icon(Icons.Default.Delete, "حذف") }
@@ -477,6 +525,9 @@ fun GroupsScreen() {
     }
     if (adding) AlertDialog({ adding = false }, title = { Text("گروه جدید") },
         text = { OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("نام گروه") }) },
-        confirmButton = { TextButton({ if (name.isNotBlank()) db.addGroup(name); name = ""; adding = false; reload() }) { Text("افزودن") } },
+        confirmButton = { TextButton({
+            if (name.isNotBlank()) try { db.addGroup(name) } catch (_: Exception) { Toast.makeText(ctx, "ذخیره گروه ناموفق بود", Toast.LENGTH_LONG).show() }
+            name = ""; adding = false; reload()
+        }) { Text("افزودن") } },
         dismissButton = { TextButton({ adding = false }) { Text("انصراف") } })
 }
