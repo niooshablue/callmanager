@@ -11,25 +11,39 @@ data class Group(val id: Int, val name: String, val autoReject: Boolean, val all
 
 fun norm(n: String?): String = (n ?: "").filter { it.isDigit() }.takeLast(10)
 
-class Db private constructor(c: Context) : SQLiteOpenHelper(c, "app.db", null, 4) {
+class Db private constructor(c: Context) : SQLiteOpenHelper(c, "app.db", null, 5) {
     override fun onCreate(d: SQLiteDatabase) {
         d.execSQL("CREATE TABLE notes(num TEXT PRIMARY KEY, note TEXT)")
         d.execSQL("CREATE TABLE groups_t(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, reject INTEGER DEFAULT 0, allow INTEGER DEFAULT 0)")
         d.execSQL("CREATE TABLE members(num TEXT, gid INTEGER, PRIMARY KEY(num, gid))")
         d.execSQL("CREATE TABLE blocked(num TEXT PRIMARY KEY)")
         createRef(d)
+        d.execSQL("CREATE TABLE sim_choices(num TEXT PRIMARY KEY, account_id TEXT NOT NULL, updated_at INTEGER NOT NULL)")
         listOf("خانواده", "دوستان", "همکاران").forEach { d.execSQL("INSERT INTO groups_t(name) VALUES(?)", arrayOf(it)) }
     }
 
     override fun onUpgrade(d: SQLiteDatabase, o: Int, n: Int) {
         if (o < 3) createRef(d)
         if (o < 4) try { d.execSQL("ALTER TABLE groups_t ADD COLUMN allow INTEGER DEFAULT 0") } catch (e: Exception) { }
+        if (o < 5) d.execSQL("CREATE TABLE IF NOT EXISTS sim_choices(num TEXT PRIMARY KEY, account_id TEXT NOT NULL, updated_at INTEGER NOT NULL)")
     }
 
     private fun createRef(d: SQLiteDatabase) {
         d.execSQL("CREATE TABLE IF NOT EXISTS referrers(num TEXT PRIMARY KEY, rnum TEXT, rname TEXT)")
         d.execSQL("CREATE TABLE IF NOT EXISTS favorites(num TEXT PRIMARY KEY)")
     }
+
+
+    fun saveSimChoice(num: String, accountId: String) {
+        val n = norm(num); if (n.isEmpty() || accountId.isBlank()) return
+        writableDatabase.insertWithOnConflict("sim_choices", null, ContentValues().apply {
+            put("num", n); put("account_id", accountId); put("updated_at", System.currentTimeMillis())
+        }, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    fun simChoice(num: String): String? = readableDatabase.rawQuery(
+        "SELECT account_id FROM sim_choices WHERE num=?", arrayOf(norm(num))
+    ).use { if (it.moveToFirst()) it.getString(0) else null }
 
     fun note(num: String): String =
         readableDatabase.rawQuery("SELECT note FROM notes WHERE num=?", arrayOf(norm(num))).use { if (it.moveToFirst()) it.getString(0) else "" }

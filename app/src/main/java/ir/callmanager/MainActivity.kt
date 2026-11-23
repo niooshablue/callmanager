@@ -86,7 +86,7 @@ fun Root(initialDial: String) {
     var tab by remember { mutableIntStateOf(if (initialDial.isNotBlank()) 1 else 0) }
     var detail by remember { mutableStateOf<DetailTarget?>(null) }
     val tabs = listOf("تماس‌ها" to Icons.Default.DateRange, "شماره‌گیر" to Icons.Default.Call, "مخاطبین" to Icons.Default.Person,
-        "گروه‌ها" to Icons.Default.Star, "تنظیمات" to Icons.Default.Settings)
+        "تنظیمات" to Icons.Default.Settings)
 
     SimChooser()
     val d = detail
@@ -120,7 +120,6 @@ fun Root(initialDial: String) {
                     0 -> RecentsScreen { detail = it }
                     1 -> DialerScreen(initialDial) { detail = it }
                     2 -> ContactsScreen { detail = it }
-                    3 -> GroupsScreen()
                     else -> SettingsScreen()
                 }
             }
@@ -148,22 +147,29 @@ fun RecentsScreen(onOpen: (DetailTarget) -> Unit) {
     val cs = MaterialTheme.colorScheme
     val deleter = rememberCallDeleter()
     var filter by remember { mutableIntStateOf(0) }
+    var groupFilter by remember { mutableIntStateOf(0) }
+    var simFilter by remember { mutableStateOf("") }
     var query by remember { mutableStateOf("") }
     var limit by remember(filter, query) { mutableIntStateOf(30) }
     val selected = remember { mutableStateListOf<Long>() }
     var selMode by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf<List<Long>?>(null) }
     val all = Repo.calls
-    val list = remember(all, filter, query) {
-        val base = when (filter) {
+    val groups = remember(dbTick.intValue) { db.groups() }
+    val members = remember(dbTick.intValue) { db.allMembers() }
+    val sims = Repo.sims
+    val list = remember(all, filter, query, groupFilter, simFilter, members) {
+        val typed = when (filter) {
             1 -> all.filter { it.type == 3 }
             2 -> all.filter { it.type == 1 }
             3 -> all.filter { it.type == 2 }
             else -> all
         }
+        val byGroup = if (groupFilter == 0) typed else typed.filter { groupFilter in (members[norm(it.number)] ?: emptySet()) }
+        val bySim = if (simFilter.isBlank()) byGroup else byGroup.filter { it.simId == simFilter }
         val qn = Jalali.en(query).trim().lowercase()
         val qd = qn.filter { it.isDigit() }
-        if (qn.isEmpty()) base else base.filter { r ->
+        if (qn.isEmpty()) bySim else bySim.filter { r ->
             val nm = r.name.ifBlank { Repo.names[norm(r.number)] ?: "" }.lowercase()
             nm.contains(qn) || (qd.isNotEmpty() && r.number.filter { it.isDigit() }.contains(qd))
         }
@@ -213,6 +219,14 @@ fun RecentsScreen(onOpen: (DetailTarget) -> Unit) {
                 shape = RoundedCornerShape(28.dp))
             Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("همه", "بی‌پاسخ", "ورودی", "خروجی").forEachIndexed { i, t -> FilterChip(filter == i, { filter = i }, label = { Text(t) }) }
+            }
+            if (groups.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 3.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(groupFilter == 0, { groupFilter = 0 }, label = { Text("همه گروه‌ها") })
+                groups.forEach { g -> FilterChip(groupFilter == g.id, { groupFilter = g.id }, label = { Text(g.name) }) }
+            }
+            if (sims.size > 1) Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 3.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(simFilter.isBlank(), { simFilter = "" }, label = { Text("همه سیم‌کارت‌ها") })
+                sims.forEach { sim -> FilterChip(simFilter == sim.handle.id, { simFilter = sim.handle.id }, label = { Text("SIM ${Jalali.fa(sim.index)}") }) }
             }
         }
         if (list.isEmpty()) Empty(if (Repo.loadingContacts) "در حال بارگذاری…" else "تماسی وجود ندارد")
@@ -328,7 +342,7 @@ fun DialerScreen(initial: String, onOpen: (DetailTarget) -> Unit) {
 // ---------------- مخاطبین ----------------
 
 @Composable
-fun ContactRow(c: Contact, onTap: () -> Unit, onLong: () -> Unit) {
+fun ContactRow(c: Contact, hasReminder: Boolean = false, onTap: () -> Unit, onLong: () -> Unit) {
     val ctx = LocalContext.current
     val cs = MaterialTheme.colorScheme
     Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 3.dp).clip(RoundedCornerShape(18.dp))
@@ -338,7 +352,13 @@ fun ContactRow(c: Contact, onTap: () -> Unit, onLong: () -> Unit) {
             Avatar(c.name)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(c.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(c.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                    if (hasReminder) {
+                        Spacer(Modifier.width(5.dp))
+                        Icon(Icons.Default.NotificationsActive, "یادآوری فعال", tint = cs.primary, modifier = Modifier.size(16.dp))
+                    }
+                }
                 Text(Jalali.fa(c.number), fontSize = 12.sp, color = cs.onSurfaceVariant)
             }
             IconButton({ sendSms(ctx, c.number) }) { Icon(Icons.Default.Email, "پیامک", tint = cs.onSurfaceVariant) }
@@ -356,6 +376,7 @@ fun ContactsScreen(onOpen: (DetailTarget) -> Unit) {
     val groups = remember(dbTick.intValue) { db.groups() }
     val members = remember(dbTick.intValue) { db.allMembers() }
     val favs = remember(dbTick.intValue) { db.allFavs() }
+    val reminderNumbers = remember(dbTick.intValue) { Reminders.numbers(ctx) }
     val all = Repo.contacts
     val list = remember(all, q, gsel, members, favs) {
         val qn = Jalali.en(q).trim().lowercase()
@@ -394,7 +415,8 @@ fun ContactsScreen(onOpen: (DetailTarget) -> Unit) {
         } else LazyColumn(contentPadding = PaddingValues(bottom = 12.dp)) {
             items(list) { c ->
                 SwipeRow(Prefs.cSwL, Prefs.cSwR, { a -> perform(a, c) }) {
-                    ContactRow(c, onTap = { perform(Prefs.cTap, c) }, onLong = { perform(Prefs.cLong, c) })
+                    ContactRow(c, hasReminder = norm(c.number) in reminderNumbers,
+                        onTap = { perform(Prefs.cTap, c) }, onLong = { perform(Prefs.cLong, c) })
                 }
             }
         }

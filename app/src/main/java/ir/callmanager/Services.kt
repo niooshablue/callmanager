@@ -189,20 +189,75 @@ fun quietNow(): Boolean {
 
 // ---------------- یادآوری تماس ----------------
 
+data class CallReminder(val number: String, val name: String, val atMillis: Long)
+
 object Reminders {
-    fun schedule(c: Context, number: String, name: String, delayMs: Long) {
-        val am = c.getSystemService(AlarmManager::class.java)
-        val pi = PendingIntent.getBroadcast(c, 1000 + (norm(number).hashCode() and 0xffff),
-            Intent(c, ReminderReceiver::class.java).putExtra("number", number).putExtra("name", name),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + delayMs, pi)
+    private const val STORE = "call_reminders"
+    private const val KEY = "items"
+
+    private fun items(c: Context): MutableList<CallReminder> {
+        val raw = c.getSharedPreferences(STORE, Context.MODE_PRIVATE).getString(KEY, "[]") ?: "[]"
+        val arr = try { org.json.JSONArray(raw) } catch (_: Exception) { org.json.JSONArray() }
+        val out = mutableListOf<CallReminder>()
+        for (i in 0 until arr.length()) try {
+            val o = arr.getJSONObject(i)
+            out += CallReminder(o.getString("number"), o.optString("name", ""), o.getLong("at"))
+        } catch (_: Exception) { }
+        return out
     }
 
-    fun tomorrowNine(): Long {
-        val cal = Calendar.getInstance().apply {
-            add(Calendar.DAY_OF_YEAR, 1); set(Calendar.HOUR_OF_DAY, 9); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0)
+    private fun save(c: Context, list: List<CallReminder>) {
+        val arr = org.json.JSONArray()
+        list.forEach { arr.put(org.json.JSONObject().put("number", it.number).put("name", it.name).put("at", it.atMillis)) }
+        c.getSharedPreferences(STORE, Context.MODE_PRIVATE).edit().putString(KEY, arr.toString()).apply()
+    }
+
+    fun all(c: Context): List<CallReminder> = items(c).sortedBy { it.atMillis }
+    fun has(c: Context, number: String): Boolean = items(c).any { norm(it.number) == norm(number) && it.atMillis > System.currentTimeMillis() }
+    fun numbers(c: Context): Set<String> = items(c).filter { it.atMillis > System.currentTimeMillis() }.map { norm(it.number) }.toSet()
+    fun rescheduleAll(c: Context) {
+        val am = c.getSystemService(AlarmManager::class.java)
+        items(c).filter { it.atMillis > System.currentTimeMillis() }.forEach { r ->
+            val pi = pending(c, r)
+            if (android.os.Build.VERSION.SDK_INT >= 23) am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, r.atMillis, pi)
+            else am.set(AlarmManager.RTC_WAKEUP, r.atMillis, pi)
         }
-        return cal.timeInMillis - System.currentTimeMillis()
+    }
+
+    fun schedule(c: Context, number: String, name: String, triggerAtMillis: Long) {
+        if (number.isBlank() || triggerAtMillis <= System.currentTimeMillis()) return
+        val n = norm(number)
+        val list = items(c).toMutableList()
+        val reminder = CallReminder(number, name, triggerAtMillis)
+        list.removeAll { norm(it.number) == n && it.atMillis == triggerAtMillis }
+        list += reminder
+        save(c, list)
+        val am = c.getSystemService(AlarmManager::class.java)
+        val pi = pending(c, reminder)
+        if (android.os.Build.VERSION.SDK_INT >= 23) am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMillis, pi)
+        else am.set(AlarmManager.RTC_WAKEUP, triggerAtMillis, pi)
+    }
+
+    private fun pending(c: Context, r: CallReminder): PendingIntent {
+        val code = 1000 + (31 * norm(r.number).hashCode() + r.atMillis.hashCode()).and(0x7fffffff) % 100000
+        return PendingIntent.getBroadcast(c, code,
+            Intent(c, ReminderReceiver::class.java).putExtra("number", r.number).putExtra("name", r.name).putExtra("at", r.atMillis),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+    }
+
+    fun delete(c: Context, number: String, atMillis: Long? = null) {
+        val n = norm(number)
+        val current = items(c)
+        val old = current.filter { norm(it.number) == n && (atMillis == null || it.atMillis == atMillis) }
+        val am = c.getSystemService(AlarmManager::class.java)
+        old.forEach { am.cancel(pending(c, it)) }
+        save(c, current.filterNot { norm(it.number) == n && (atMillis == null || it.atMillis == atMillis) })
+    }
+}
+
+class ReminderBootReceiver : BroadcastReceiver() {
+    override fun onReceive(c: Context, i: Intent) {
+        if (i.action == Intent.ACTION_BOOT_COMPLETED || i.action == Intent.ACTION_MY_PACKAGE_REPLACED) Reminders.rescheduleAll(c)
     }
 }
 
@@ -211,6 +266,17 @@ class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(c: Context, i: Intent) {
         val num = i.getStringExtra("number") ?: return
         val name = i.getStringExtra("name") ?: ""
+        // یادآوری پس از نمایش اعلان از فهرست فعال‌ها خارج می‌شود.
+        c.getSharedPreferences("call_reminders", Context.MODE_PRIVATE).let { prefs ->
+            val arr = try { org.json.JSONArray(prefs.getString("items", "[]") ?: "[]") } catch (_: Exception) { org.json.JSONArray() }
+            val kept = org.json.JSONArray()
+            val firedAt = i.getLongExtra("at", -1L)
+            for (x in 0 until arr.length()) try {
+                val o = arr.getJSONObject(x)
+                if (!(norm(o.optString("number")) == norm(num) && o.optLong("at", -2L) == firedAt)) kept.put(o)
+            } catch (_: Exception) { }
+            prefs.edit().putString("items", kept.toString()).apply()
+        }
         Notifs.channels(c)
         val fl = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         val code = norm(num).hashCode() and 0xffff
@@ -415,11 +481,14 @@ class AppInCallService : InCallService() {
         try { callAudioState?.let { applyAudio(it) } } catch (e: Exception) { }
         if (call.state == Call.STATE_RINGING) wakeScreen()
         if (isWaiting && Prefs.on("beeps")) beeps()
-        val popupShown = call.state == Call.STATE_RINGING && showIncomingPopup(call)
+        val popupShown = call.state == Call.STATE_RINGING && Prefs.on("callPopup") && showIncomingPopup(call)
         refresh()
-        // اگر پنجرهٔ شناور مجوز نداشته باشد، رابط استاندارد تماس را باز می‌کنیم.
-        if (Prefs.on("callPopup") && !popupShown) {
-            try { startActivity(Intent(this, InCallActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (e: Exception) { }
+        // تماس خروجی نیز باید بلافاصله صفحه مکالمه اختصاصی را باز کند؛
+        // در تماس ورودی از کارت شناور یا رابط تمام‌صفحه سیستم استفاده می‌شود.
+        val outgoingOrActive = call.state != Call.STATE_RINGING
+        if (outgoingOrActive || (Prefs.on("callPopup") && !popupShown)) {
+            try { startActivity(Intent(this, InCallActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)) } catch (_: Exception) { }
         }
     }
 

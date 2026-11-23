@@ -11,8 +11,8 @@ android {
         applicationId = "ir.callmanager"
         minSdk = 31
         targetSdk = 34
-        versionCode = 8
-        versionName = "0.8"
+        versionCode = 10
+        versionName = "1.0"
     }
     signingConfigs {
         if (ks.isNotEmpty()) create("release") {

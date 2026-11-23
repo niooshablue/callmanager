@@ -203,11 +203,20 @@ fun CallPill(modifier: Modifier, title: String, sub: String?, enabled: Boolean =
 fun SimCallRow(number: String, modifier: Modifier = Modifier, enabled: Boolean = true) {
     val ctx = LocalContext.current
     val sims = Repo.sims
+    val preferredId = remember(number, sims, Repo.calls) {
+        if (number.isBlank()) null else try {
+            Db.get(ctx).simChoice(number) ?: Repo.calls.asSequence()
+                .filter { norm(it.number) == norm(number) && it.simId.isNotBlank() }
+                .maxByOrNull { it.date }?.simId ?: sims.firstOrNull { it.isDefault }?.handle?.id
+        } catch (_: Exception) { sims.firstOrNull { it.isDefault }?.handle?.id }
+    }
     val on = enabled && number.isNotBlank()
     Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         if (sims.size < 2) CallPill(Modifier.weight(1f), "تماس", null, on) { placeCall(ctx, number, sims.firstOrNull()?.handle) }
-        else sims.forEach { s ->
-            CallPill(Modifier.weight(1f), "SIM ${Jalali.fa(s.index)}" + if (s.isDefault) " ★" else "", s.label, on) {
+        else sims.sortedByDescending { it.handle.id == preferredId }.forEach { s ->
+            val preferred = s.handle.id == preferredId
+            CallPill(Modifier.weight(1f), "SIM ${Jalali.fa(s.index)}" + if (preferred) " ★" else "",
+                if (preferred) "پیشنهادی · ${s.label}" else s.label, on) {
                 placeCall(ctx, number, s.handle)
             }
         }
