@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.font.FontFamily
@@ -30,6 +31,35 @@ object Prefs {
     var cSwL by mutableIntStateOf(2)
     var cSwR by mutableIntStateOf(3)
 
+    val defaultReplies = listOf("الان نمی‌توانم صحبت کنم، بعداً تماس می‌گیرم.", "در جلسه هستم، لطفاً پیام بدهید.", "تا چند دقیقهٔ دیگر تماس می‌گیرم.")
+    var quickReplies by mutableStateOf(defaultReplies)
+
+    var callDark by mutableStateOf(false)
+    var callTheme by mutableIntStateOf(0)      // 0 گرادیان، 1 ساده، 2 تیره AMOLED
+    var answerStyle by mutableIntStateOf(0)    // 0 دکمه‌های گرد، 1 کشویی iOS، 2 کپسولی، 3 کشیدن بالا/پایین
+    var dialerStyle by mutableIntStateOf(0)    // 0 کلاسیک، 1 دایره‌ای، 2 مینیمال
+
+    val flags = mutableStateMapOf<String, Boolean>()
+    fun on(k: String): Boolean = flags[k] ?: true
+    fun setFlag(k: String, v: Boolean) { flags[k] = v; sp?.edit()?.putBoolean("flag_$k", v)?.apply() }
+    val featureList = listOf(
+        "notes" to "نمایش یادداشت در صفحه تماس",
+        "referrer" to "نمایش معرف در صفحه تماس",
+        "groupsShow" to "نمایش گروه‌ها در صفحه تماس",
+        "lastCall" to "نمایش آخرین تماس قبلی",
+        "proximity" to "خاموش‌شدن صفحه با سنسور مجاورت",
+        "beeps" to "بوق تماس دوم (پشت خط)",
+        "quickReplies" to "پیامک‌های آماده هنگام زنگ‌خوردن",
+        "record" to "دکمهٔ ضبط مکالمه",
+        "rejectGroups" to "رد خودکار گروه‌ها",
+        "allowGroups" to "حالت «فقط گروه مجاز»",
+        "blockedNumbers" to "رد خودکار شماره‌های مسدود",
+        "favorites" to "علاقه‌مندی‌ها در شماره‌گیر",
+        "dialerSuggest" to "پیشنهاد مخاطب هنگام شماره‌گیری"
+    )
+    var quietOn by mutableStateOf(false)
+    var quietStart by mutableIntStateOf(22)
+    var quietEnd by mutableIntStateOf(7)
     var missedNotify by mutableStateOf(true)
     var missedBadge by mutableStateOf(true)
     var missedCount = 0
@@ -44,7 +74,12 @@ object Prefs {
         persian = s.getBoolean("persian", true); rejectUnknown = s.getBoolean("rejectUnknown", false)
         hTap = s.getInt("hTap", 1); hLong = s.getInt("hLong", 5); hSwL = s.getInt("hSwL", 2); hSwR = s.getInt("hSwR", 3)
         cTap = s.getInt("cTap", 1); cLong = s.getInt("cLong", 0); cSwL = s.getInt("cSwL", 2); cSwR = s.getInt("cSwR", 3)
+        callDark = s.getBoolean("callDark", false)
+        callTheme = s.getInt("callTheme", 0); answerStyle = s.getInt("answerStyle", 0); dialerStyle = s.getInt("dialerStyle", 0)
+        featureList.forEach { flags[it.first] = s.getBoolean("flag_" + it.first, true) }
+        quietOn = s.getBoolean("quietOn", false); quietStart = s.getInt("quietStart", 22); quietEnd = s.getInt("quietEnd", 7)
         missedNotify = s.getBoolean("missedNotify", true); missedBadge = s.getBoolean("missedBadge", true)
+        s.getString("replies", null)?.let { quickReplies = if (it.isEmpty()) emptyList() else it.split("\u001F") }
         missedCount = s.getInt("missedCount", 0); missedLabels = s.getString("missedLabels", "") ?: ""; missedLast = s.getString("missedLast", "") ?: ""
     }
 
@@ -54,8 +89,10 @@ object Prefs {
             ?.putBoolean("persian", persian)?.putBoolean("rejectUnknown", rejectUnknown)
             ?.putInt("hTap", hTap)?.putInt("hLong", hLong)?.putInt("hSwL", hSwL)?.putInt("hSwR", hSwR)
             ?.putInt("cTap", cTap)?.putInt("cLong", cLong)?.putInt("cSwL", cSwL)?.putInt("cSwR", cSwR)
-            ?.putBoolean("missedNotify", missedNotify)?.putBoolean("missedBadge", missedBadge)?.apply()
+            ?.putBoolean("callDark", callDark)?.putInt("callTheme", callTheme)?.putInt("answerStyle", answerStyle)?.putInt("dialerStyle", dialerStyle)?.putBoolean("quietOn", quietOn)?.putInt("quietStart", quietStart)?.putInt("quietEnd", quietEnd)?.putBoolean("missedNotify", missedNotify)?.putBoolean("missedBadge", missedBadge)?.apply()
     }
+
+    fun saveReplies() { sp?.edit()?.putString("replies", quickReplies.joinToString("\u001F"))?.apply() }
 
     fun reset() { bg = 0; card = 0; text = 0; accent = 0; fontScale = 1f; font = 0; save() }
 

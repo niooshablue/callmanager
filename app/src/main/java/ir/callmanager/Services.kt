@@ -1,8 +1,15 @@
 package ir.callmanager
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.Person
+import android.media.AudioManager
+import android.media.ToneGenerator
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -21,14 +28,27 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import java.io.File
+import java.util.Calendar
 
 object CallHolder {
-    var call by mutableStateOf<Call?>(null)
+    var call by mutableStateOf<Call?>(null)       // تماس اصلی
     var state by mutableIntStateOf(Call.STATE_NEW)
+    var waiting by mutableStateOf<Call?>(null)    // تماس دیگری که پشت خط زنگ می‌خورد
+    var held by mutableStateOf<Call?>(null)       // تماس در انتظار (Hold)
     var muted by mutableStateOf(false)
     var route by mutableIntStateOf(CallAudioState.ROUTE_EARPIECE)
     var routeMask by mutableIntStateOf(CallAudioState.ROUTE_EARPIECE or CallAudioState.ROUTE_SPEAKER)
     var service: InCallService? = null
+
+    fun recompute(list: List<Call>) {
+        val primary = list.firstOrNull {
+            it.state == Call.STATE_ACTIVE || it.state == Call.STATE_DIALING || it.state == Call.STATE_CONNECTING || it.state == Call.STATE_PULLING_CALL
+        } ?: list.firstOrNull { it.state == Call.STATE_RINGING } ?: list.firstOrNull()
+        call = primary
+        state = primary?.state ?: Call.STATE_NEW
+        waiting = if (primary != null && primary.state != Call.STATE_RINGING) list.firstOrNull { it.state == Call.STATE_RINGING && it !== primary } else null
+        held = list.firstOrNull { it.state == Call.STATE_HOLDING && it !== primary }
+    }
 }
 
 object Recorder {
@@ -86,6 +106,7 @@ object Notifs {
         nm.createNotificationChannel(NotificationChannel("incoming", "تماس ورودی", NotificationManager.IMPORTANCE_HIGH))
         nm.createNotificationChannel(NotificationChannel("ongoing", "تماس جاری", NotificationManager.IMPORTANCE_LOW).apply { setSound(null, null) })
         nm.createNotificationChannel(NotificationChannel("missed", "تماس‌های بی‌پاسخ", NotificationManager.IMPORTANCE_DEFAULT))
+        nm.createNotificationChannel(NotificationChannel("reminder", "یادآوری تماس", NotificationManager.IMPORTANCE_HIGH))
         nm.createNotificationChannel(NotificationChannel("missed_badge", "نشان تماس بی‌پاسخ (بی‌صدا)", NotificationManager.IMPORTANCE_MIN))
     }
 
@@ -141,11 +162,61 @@ class CallActionReceiver : BroadcastReceiver() {
             Notifs.A_HANGUP -> CallHolder.call?.disconnect()
             Notifs.A_CALLBACK -> {
                 val n = i.getStringExtra("number") ?: ""
-                Notifs.clearMissed(c)
+                if (!i.getBooleanExtra("noclear", false)) Notifs.clearMissed(c)
                 val s = loadSims(c)
                 placeCall(c, n, (s.firstOrNull { it.isDefault } ?: s.firstOrNull())?.handle)
             }
         }
+    }
+}
+
+/** آیا اکنون در بازهٔ «مزاحم نشو» هستیم؟ */
+fun quietNow(): Boolean {
+    if (!Prefs.quietOn) return false
+    val h = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+    val s = Prefs.quietStart; val e = Prefs.quietEnd
+    return if (s == e) false else if (s < e) h in s until e else (h >= s || h < e)
+}
+
+// ---------------- یادآوری تماس ----------------
+
+object Reminders {
+    fun schedule(c: Context, number: String, name: String, delayMs: Long) {
+        val am = c.getSystemService(AlarmManager::class.java)
+        val pi = PendingIntent.getBroadcast(c, 1000 + (norm(number).hashCode() and 0xffff),
+            Intent(c, ReminderReceiver::class.java).putExtra("number", number).putExtra("name", name),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + delayMs, pi)
+    }
+
+    fun tomorrowNine(): Long {
+        val cal = Calendar.getInstance().apply {
+            add(Calendar.DAY_OF_YEAR, 1); set(Calendar.HOUR_OF_DAY, 9); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0)
+        }
+        return cal.timeInMillis - System.currentTimeMillis()
+    }
+}
+
+class ReminderReceiver : BroadcastReceiver() {
+    @Suppress("DEPRECATION")
+    override fun onReceive(c: Context, i: Intent) {
+        val num = i.getStringExtra("number") ?: return
+        val name = i.getStringExtra("name") ?: ""
+        Notifs.channels(c)
+        val fl = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        val code = norm(num).hashCode() and 0xffff
+        val cb = PendingIntent.getBroadcast(c, 2000 + code,
+            Intent(c, CallActionReceiver::class.java).setAction(Notifs.A_CALLBACK).putExtra("number", num).putExtra("noclear", true), fl)
+        val sms = PendingIntent.getActivity(c, 3000 + code, Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:" + Uri.encode(num))), fl)
+        val open = PendingIntent.getActivity(c, 4000 + code,
+            Intent(c, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP), fl)
+        val b = Notification.Builder(c, "reminder").setSmallIcon(android.R.drawable.ic_popup_reminder)
+            .setContentTitle("⏰ یادآوری تماس")
+            .setContentText("با " + name.ifBlank { Jalali.fa(num) } + " تماس بگیرید")
+            .setAutoCancel(true).setContentIntent(open).setCategory(Notification.CATEGORY_REMINDER)
+            .addAction(android.R.drawable.ic_menu_call, "تماس", cb)
+            .addAction(android.R.drawable.ic_menu_send, "پیامک", sms)
+        c.getSystemService(NotificationManager::class.java).notify(100 + (code and 0xff), b.build())
     }
 }
 
@@ -155,8 +226,16 @@ class AppCallScreeningService : CallScreeningService() {
     override fun onScreenCall(details: Call.Details) {
         val incoming = details.callDirection == Call.Details.DIRECTION_INCOMING
         val number = details.handle?.schemeSpecificPart ?: ""
-        val reject = incoming && number.isNotBlank() &&
-            (Db.get(this).shouldReject(number) || (Prefs.rejectUnknown && lookupName(this, number) == null))
+        val db = Db.get(this)
+        val hasNumber = number.isNotBlank()
+        val reject = incoming && (
+            (hasNumber && (
+                (Prefs.on("blockedNumbers") && db.isBlocked(number)) ||
+                (Prefs.on("rejectGroups") && db.inRejectGroup(number)) ||
+                (Prefs.rejectUnknown && lookupName(this, number) == null) ||
+                (quietNow() && !db.isFav(number)))) ||
+            // حالت «فقط گروه مجاز»: هر تماسی که عضو یک گروه مجاز نباشد رد می‌شود
+            (Prefs.on("allowGroups") && db.allowOnlyActive() && !db.inAllowGroup(number)))
         val r = CallResponse.Builder()
         if (reject) r.setDisallowCall(true).setRejectCall(true).setSkipNotification(false).setSkipCallLog(false)
         respondToCall(details, r.build())
@@ -164,14 +243,20 @@ class AppCallScreeningService : CallScreeningService() {
 }
 
 class AppInCallService : InCallService() {
+    private val handler = Handler(Looper.getMainLooper())
+    private var beepRounds = 0
+
     private val cb = object : Call.Callback() {
-        override fun onStateChanged(call: Call, state: Int) {
-            if (call === CallHolder.call) { CallHolder.state = state; refresh() }
-        }
+        override fun onStateChanged(call: Call, state: Int) { update(null) }
+    }
+
+    private fun update(removed: Call?) {
+        CallHolder.recompute(calls.filter { it !== removed })
+        if (CallHolder.call != null) refresh()
     }
 
     override fun onCreate() { super.onCreate(); CallHolder.service = this; Notifs.channels(this) }
-    override fun onDestroy() { CallHolder.service = null; super.onDestroy() }
+    override fun onDestroy() { handler.removeCallbacksAndMessages(null); CallHolder.service = null; super.onDestroy() }
 
     override fun onCallAudioStateChanged(a: CallAudioState) { applyAudio(a) }
 
@@ -181,47 +266,91 @@ class AppInCallService : InCallService() {
         CallHolder.routeMask = a.supportedRouteMask
     }
 
+    /** روشن‌کردن صفحه هنگام تماس ورودی (حتی در حالت قفل) */
+    @Suppress("DEPRECATION")
+    private fun wakeScreen() {
+        try {
+            val pm = getSystemService(PowerManager::class.java)
+            val wl = pm.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE, "callmanager:ring")
+            wl.acquire(10_000L)
+        } catch (e: Exception) { }
+    }
+
+    /** چند بوق کوتاه برای تماس دوم (پشت خط) */
+    private fun beeps() { beepRounds = 0; beepRound() }
+
+    private fun beepRound() {
+        if (CallHolder.waiting == null || beepRounds >= 4) return
+        beepRounds++
+        try {
+            val tg = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 85)
+            for (i in 0..2) handler.postDelayed({ try { tg.startTone(ToneGenerator.TONE_PROP_BEEP, 160) } catch (e: Exception) { } }, i * 380L)
+            handler.postDelayed({ try { tg.release() } catch (e: Exception) { } }, 1500L)
+        } catch (e: Exception) { }
+        handler.postDelayed({ beepRound() }, 4000L)
+    }
+
     @Suppress("DEPRECATION")
     override fun onCallAdded(call: Call) {
         call.registerCallback(cb)
-        CallHolder.call = call
-        CallHolder.state = call.state
+        val isWaiting = call.state == Call.STATE_RINGING && calls.any { it !== call }
+        CallHolder.recompute(calls)
         try { callAudioState?.let { applyAudio(it) } } catch (e: Exception) { }
         refresh()
+        if (call.state == Call.STATE_RINGING) wakeScreen()
+        if (isWaiting && Prefs.on("beeps")) beeps()
         // علاوه بر اعلان تمام‌صفحه، مستقیم هم تلاش می‌کنیم صفحهٔ تماس باز شود
         try { startActivity(Intent(this, InCallActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (e: Exception) { }
     }
 
-    /** اعلان تماس: برای تماس ورودی تمام‌صفحه؛ برای تماس جاری غیرقابل‌بستن با دکمهٔ قطع */
+    /** اعلان تماس: ورودی تمام‌صفحه؛ جاری غیرقابل‌بستن با دکمهٔ قطع */
     @Suppress("DEPRECATION")
     private fun refresh() {
         val call = CallHolder.call ?: return
         val num = call.details.handle?.schemeSpecificPart ?: ""
         val name = lookupName(this, num) ?: Jalali.fa(num).ifBlank { "ناشناس" }
         val ringing = call.state == Call.STATE_RINGING
+        val fl = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         val open = PendingIntent.getActivity(this, 0,
-            Intent(this, InCallActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val b = Notification.Builder(this, if (ringing) "incoming" else "ongoing")
-            .setSmallIcon(if (ringing) android.R.drawable.sym_call_incoming else android.R.drawable.stat_sys_phone_call)
-            .setContentTitle(name)
-            .setContentText(if (ringing) "تماس ورودی" else "در حال مکالمه • برای بازگشت به صفحه تماس لمس کنید")
-            .setCategory(Notification.CATEGORY_CALL).setOngoing(true).setOnlyAlertOnce(true).setContentIntent(open)
-        if (ringing) {
-            b.setFullScreenIntent(open, true)
-            b.addAction(android.R.drawable.ic_menu_close_clear_cancel, "رد", Notifs.action(this, Notifs.A_DECLINE, 11))
-            b.addAction(android.R.drawable.ic_menu_call, "پاسخ", Notifs.action(this, Notifs.A_ANSWER, 12))
-        } else {
-            val ct = call.details.connectTimeMillis
-            if (ct > 0) b.setUsesChronometer(true).setWhen(ct)
-            b.addAction(android.R.drawable.ic_menu_close_clear_cancel, "قطع", Notifs.action(this, Notifs.A_HANGUP, 13))
+            Intent(this, InCallActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP), fl)
+        val answer = PendingIntent.getActivity(this, 12,
+            Intent(this, InCallActivity::class.java).putExtra("act", "answer").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP), fl)
+        val decline = Notifs.action(this, Notifs.A_DECLINE, 11)
+        val hangup = Notifs.action(this, Notifs.A_HANGUP, 13)
+        val wName = CallHolder.waiting?.let { w -> val wn = w.details.handle?.schemeSpecificPart ?: ""; lookupName(this, wn) ?: Jalali.fa(wn) }
+
+        fun build(useStyle: Boolean): Notification {
+            val b = Notification.Builder(this, if (ringing) "incoming" else "ongoing")
+                .setSmallIcon(if (ringing) android.R.drawable.sym_call_incoming else android.R.drawable.stat_sys_phone_call)
+                .setContentTitle(name)
+                .setContentText(when {
+                    ringing -> "تماس ورودی"
+                    wName != null -> "تماس دیگر: $wName"
+                    else -> "در حال مکالمه • برای بازگشت به صفحه تماس لمس کنید"
+                })
+                .setCategory(Notification.CATEGORY_CALL).setOngoing(true).setOnlyAlertOnce(true).setContentIntent(open)
+            if (ringing) b.setFullScreenIntent(open, true)
+            else {
+                val ct = call.details.connectTimeMillis
+                if (ct > 0) b.setUsesChronometer(true).setWhen(ct)
+            }
+            if (useStyle) {
+                val person = Person.Builder().setName(name).setImportant(true).build()
+                b.setStyle(if (ringing) Notification.CallStyle.forIncomingCall(person, decline, answer) else Notification.CallStyle.forOngoingCall(person, hangup))
+            } else if (ringing) {
+                b.addAction(android.R.drawable.ic_menu_close_clear_cancel, "رد", decline)
+                b.addAction(android.R.drawable.ic_menu_call, "پاسخ", answer)
+            } else b.addAction(android.R.drawable.ic_menu_close_clear_cancel, "قطع", hangup)
+            val n = b.build()
+            n.flags = n.flags or Notification.FLAG_NO_CLEAR or Notification.FLAG_ONGOING_EVENT
+            return n
         }
-        val n = b.build()
-        n.flags = n.flags or Notification.FLAG_NO_CLEAR or Notification.FLAG_ONGOING_EVENT
+
+        val styled = try { build(true) } catch (e: Exception) { build(false) }
         try {
-            startForeground(Notifs.ID_CALL, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
+            startForeground(Notifs.ID_CALL, styled, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
         } catch (e: Exception) {
-            getSystemService(NotificationManager::class.java).notify(Notifs.ID_CALL, n)
+            try { getSystemService(NotificationManager::class.java).notify(Notifs.ID_CALL, build(false)) } catch (e2: Exception) { }
         }
     }
 
@@ -233,14 +362,10 @@ class AppInCallService : InCallService() {
             Prefs.addMissed(lookupName(this, num) ?: Jalali.fa(num).ifBlank { "ناشناس" }, num)
             Notifs.postMissed(this)
         }
-        val next = calls.firstOrNull { it !== call }
-        if (CallHolder.call === call) {
-            CallHolder.call = next
-            if (next != null) CallHolder.state = next.state
-        }
+        update(call)
         if (CallHolder.call == null) {
             try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (e: Exception) { }
             getSystemService(NotificationManager::class.java).cancel(Notifs.ID_CALL)
-        } else refresh()
+        }
     }
 }

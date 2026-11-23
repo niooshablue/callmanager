@@ -2,6 +2,13 @@
 package ir.callmanager
 
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -235,21 +242,118 @@ fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
 }
 
 @Composable
-fun Keypad(modifier: Modifier = Modifier, keyHeight: Dp = 58.dp, onKey: (Char) -> Unit, onLongZero: (() -> Unit)? = null) {
+fun Keypad(modifier: Modifier = Modifier, keyHeight: Dp = 58.dp, style: Int = Prefs.dialerStyle,
+           onKey: (Char) -> Unit, onLongZero: (() -> Unit)? = null) {
+    val cs = MaterialTheme.colorScheme
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
         Column(modifier) {
             listOf("123", "456", "789", "*0#").forEach { row ->
                 Row(Modifier.fillMaxWidth()) {
                     row.forEach { ch ->
-                        Box(Modifier.weight(1f).padding(4.dp).height(keyHeight).clip(RoundedCornerShape(18.dp))
-                            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                            .combinedClickable(onClick = { onKey(ch) }, onLongClick = if (ch == '0') onLongZero else null),
-                            contentAlignment = Alignment.Center) {
-                            Text(Jalali.fa(ch.toString()), fontSize = 24.sp)
+                        val click = Modifier.combinedClickable(onClick = { onKey(ch) }, onLongClick = if (ch == '0') onLongZero else null)
+                        val label = Jalali.fa(ch.toString())
+                        when (style) {
+                            1 -> Box(Modifier.weight(1f).padding(vertical = 4.dp), contentAlignment = Alignment.Center) {
+                                Box(Modifier.size(keyHeight + 8.dp).clip(CircleShape).background(cs.surfaceContainerHigh).then(click),
+                                    contentAlignment = Alignment.Center) { Text(label, fontSize = 24.sp) }
+                            }
+                            2 -> Box(Modifier.weight(1f).height(keyHeight).clip(CircleShape).then(click), contentAlignment = Alignment.Center) {
+                                Text(label, fontSize = 30.sp, fontWeight = FontWeight.Light)
+                            }
+                            else -> Box(Modifier.weight(1f).padding(4.dp).height(keyHeight).clip(RoundedCornerShape(30.dp))
+                                .background(cs.surfaceContainerHigh).then(click), contentAlignment = Alignment.Center) {
+                                Text(label, fontSize = 24.sp)
+                            }
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+// ---------------- قالب‌های پاسخ به تماس ----------------
+
+@Composable
+fun SlideToAnswer(label: String, onAnswer: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val density = LocalDensity.current
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+        BoxWithConstraints(Modifier.fillMaxWidth().height(68.dp).clip(RoundedCornerShape(34.dp)).background(cs.surfaceContainerHigh)) {
+            val travel = with(density) { (maxWidth - 68.dp).toPx() }
+            var dx by remember { mutableFloatStateOf(0f) }
+            var dragging by remember { mutableStateOf(false) }
+            val shown by animateFloatAsState(dx, if (dragging) snap<Float>() else spring<Float>(), label = "slide")
+            Text(label, Modifier.align(Alignment.Center).graphicsLayer { alpha = 1f - (shown / travel).coerceIn(0f, 1f) },
+                fontSize = 15.sp, color = cs.onSurfaceVariant)
+            Box(Modifier.padding(4.dp).offset { IntOffset(shown.toInt(), 0) }.size(60.dp).clip(CircleShape)
+                .background(Brush.verticalGradient(listOf(Color(0xFF52E58A), Color(0xFF1B9E4B))))
+                .pointerInput(travel, onAnswer) {
+                    detectHorizontalDragGestures(
+                        onDragStart = { dragging = true },
+                        onDragEnd = { dragging = false; if (dx >= travel * 0.85f) onAnswer(); dx = 0f },
+                        onDragCancel = { dragging = false; dx = 0f }
+                    ) { _, amount -> dx = (dx + amount).coerceIn(0f, travel) }
+                }, contentAlignment = Alignment.Center) { Handset(Color.White, 28.dp) }
+        }
+    }
+}
+
+@Composable
+fun SwipeUpDown(onAnswer: () -> Unit, onReject: () -> Unit) {
+    val travel = with(LocalDensity.current) { 70.dp.toPx() }
+    var dy by remember { mutableFloatStateOf(0f) }
+    var dragging by remember { mutableStateOf(false) }
+    val shown by animateFloatAsState(dy, if (dragging) snap<Float>() else spring<Float>(), label = "ud")
+    val frac = (shown / travel).coerceIn(-1f, 1f)
+    Box(Modifier.fillMaxWidth().height(230.dp), contentAlignment = Alignment.Center) {
+        Text("▲ برای پاسخ بالا بکشید", Modifier.align(Alignment.TopCenter), fontSize = 13.sp, color = Color(0xFF52E58A))
+        Text("▼ برای رد پایین بکشید", Modifier.align(Alignment.BottomCenter), fontSize = 13.sp, color = Color(0xFFFF7A7A))
+        Box(Modifier.offset { IntOffset(0, shown.toInt()) }.size(84.dp).clip(CircleShape)
+            .background(if (frac < 0f) androidx.compose.ui.graphics.lerp(Color(0xFF3B82F6), Color(0xFF1B9E4B), -frac)
+                else androidx.compose.ui.graphics.lerp(Color(0xFF3B82F6), Color(0xFFC62828), frac))
+            .pointerInput(travel, onAnswer, onReject) {
+                detectVerticalDragGestures(
+                    onDragStart = { dragging = true },
+                    onDragEnd = {
+                        dragging = false
+                        if (dy <= -travel * 0.8f) onAnswer() else if (dy >= travel * 0.8f) onReject()
+                        dy = 0f
+                    },
+                    onDragCancel = { dragging = false; dy = 0f }
+                ) { _, amount -> dy = (dy + amount).coerceIn(-travel, travel) }
+            }, contentAlignment = Alignment.Center) { Handset(Color.White, 36.dp, if (frac > 0f) 135f * frac else 0f) }
+    }
+}
+
+@Composable
+fun CapsuleButtons(onAnswer: () -> Unit, onReject: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+        Button(onReject, Modifier.weight(1f).height(60.dp), shape = RoundedCornerShape(30.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F))) {
+            Handset(Color.White, 22.dp, 135f); Spacer(Modifier.width(8.dp)); Text("رد", fontWeight = FontWeight.Bold, color = Color.White)
+        }
+        Button(onAnswer, Modifier.weight(1f).height(60.dp), shape = RoundedCornerShape(30.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E9F5B))) {
+            Handset(Color.White, 22.dp); Spacer(Modifier.width(8.dp)); Text("پاسخ", fontWeight = FontWeight.Bold, color = Color.White)
+        }
+    }
+}
+
+/** کنترل‌های پاسخ به تماس ورودی؛ style: 0 دکمه‌های گرد، 1 کشویی (iOS)، 2 کپسولی، 3 کشیدن بالا/پایین */
+@Composable
+fun AnswerControls(style: Int, onAnswer: () -> Unit, onReject: () -> Unit) {
+    when (style) {
+        1 -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            SlideToAnswer("برای پاسخ بکشید  ›››", onAnswer)
+            Spacer(Modifier.height(14.dp))
+            CallCircleButton(false, "رد تماس", onClick = onReject)
+        }
+        2 -> CapsuleButtons(onAnswer, onReject)
+        3 -> SwipeUpDown(onAnswer, onReject)
+        else -> Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            CallCircleButton(false, "رد تماس", onClick = onReject)
+            CallCircleButton(true, "پاسخ", pulse = true, onClick = onAnswer)
         }
     }
 }
@@ -270,7 +374,10 @@ fun AppHeader(title: String) {
     Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(bottomStart = 28.dp, bottomEnd = 28.dp))
         .background(Brush.horizontalGradient(listOf(lerp(cs.surface, cs.primary, 0.28f), lerp(cs.surface, cs.primary, 0.06f))))
         .statusBarsPadding().padding(horizontal = 22.dp, vertical = 16.dp)) {
-        Text(title, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Column {
+            Text(title, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Text(Jalali.dateOnly(System.currentTimeMillis()), fontSize = 12.sp, color = cs.onSurfaceVariant)
+        }
     }
 }
 

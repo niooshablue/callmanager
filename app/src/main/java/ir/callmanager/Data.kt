@@ -108,6 +108,26 @@ object Repo {
     }
 }
 
+fun lastCallOf(c: Context, number: String): Rec? {
+    val n = norm(number)
+    if (n.isEmpty()) return null
+    return try {
+        val q = Bundle().apply {
+            putString(ContentResolver.QUERY_ARG_SQL_SELECTION, "${CallLog.Calls.NUMBER} LIKE ?")
+            putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, arrayOf("%$n"))
+            putInt(ContentResolver.QUERY_ARG_LIMIT, 1)
+            putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(CallLog.Calls.DATE))
+            putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
+        }
+        c.contentResolver.query(CallLog.Calls.CONTENT_URI,
+            arrayOf(CallLog.Calls.NUMBER, CallLog.Calls.CACHED_NAME, CallLog.Calls.TYPE, CallLog.Calls.DATE,
+                CallLog.Calls.DURATION, CallLog.Calls.PHONE_ACCOUNT_ID, CallLog.Calls._ID), q, null)?.use {
+            if (it.moveToFirst()) Rec(it.getString(0) ?: "", it.getString(1) ?: "", it.getInt(2), it.getLong(3),
+                it.getLong(4), it.getString(5) ?: "", it.getLong(6)) else null
+        }
+    } catch (e: Exception) { null }
+}
+
 fun deleteCalls(c: Context, ids: List<Long>): Boolean = try {
     ids.chunked(400).forEach { ch ->
         c.contentResolver.delete(CallLog.Calls.CONTENT_URI, "${CallLog.Calls._ID} IN (${ch.joinToString(",")})", null)

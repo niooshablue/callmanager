@@ -2,6 +2,8 @@
 package ir.callmanager
 
 import android.app.NotificationManager
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ContentUris
 import android.content.Intent
 import android.media.MediaPlayer
@@ -59,13 +61,15 @@ fun DetailScreen(t: DetailTarget, onBack: () -> Unit) {
     val mem = remember { mutableStateListOf<Int>().apply { addAll(db.memberGroups(num)) } }
     var ref by remember { mutableStateOf(db.referrer(num)) }
     var picking by remember { mutableStateOf(false) }
+    var fav by remember { mutableStateOf(db.isFav(num)) }
+    var remindDlg by remember { mutableStateOf(false) }
     var confirmDel by remember { mutableStateOf<List<Long>?>(null) }
     val deleter = rememberCallDeleter()
     val history = remember(Repo.calls, num) { Repo.calls.filter { norm(it.number) == norm(num) } }
 
     fun save() {
         db.setNote(num, note); db.setMembers(num, mem); db.setBlocked(num, blocked)
-        db.setReferrer(num, ref?.first, ref?.second); dbTick.intValue++
+        db.setReferrer(num, ref?.first, ref?.second); db.setFav(num, fav); dbTick.intValue++
     }
     BackHandler { save(); onBack() }
 
@@ -102,6 +106,20 @@ fun DetailScreen(t: DetailTarget, onBack: () -> Unit) {
                     ctx.startActivity(Intent(Intent.ACTION_EDIT).setData(ContentUris.withAppendedId(ContactsContract.Contacts.CONTENT_URI, t.contactId)))
                 }, Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(24.dp)) {
                     Icon(Icons.Default.Edit, null); Spacer(Modifier.width(6.dp)); Text("ویرایش مخاطب")
+                }
+            }
+
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilledTonalButton({ fav = !fav }, Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 4.dp)) {
+                    Text(if (fav) "⭐ علاقه‌مند" else "☆ علاقه‌مندی", fontSize = 12.sp, maxLines = 1)
+                }
+                OutlinedButton({
+                    val cm = ctx.getSystemService(ClipboardManager::class.java)
+                    cm.setPrimaryClip(ClipData.newPlainText("number", num))
+                    Toast.makeText(ctx, "شماره کپی شد", Toast.LENGTH_SHORT).show()
+                }, Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 4.dp)) { Text("📋 کپی شماره", fontSize = 12.sp, maxLines = 1) }
+                OutlinedButton({ remindDlg = true }, Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 4.dp)) {
+                    Text("⏰ یادآوری", fontSize = 12.sp, maxLines = 1)
                 }
             }
 
@@ -177,6 +195,21 @@ fun DetailScreen(t: DetailTarget, onBack: () -> Unit) {
             }
             Spacer(Modifier.height(8.dp))
         }
+    }
+    if (remindDlg) {
+        val opts = listOf("۱۵ دقیقه دیگر" to 15L * 60_000L, "یک ساعت دیگر" to 3_600_000L,
+            "سه ساعت دیگر" to 3L * 3_600_000L, "فردا ساعت ۹ صبح" to Reminders.tomorrowNine())
+        AlertDialog(onDismissRequest = { remindDlg = false }, title = { Text("یادآوری تماس با " + t.name.ifBlank { Jalali.fa(num) }) },
+            text = {
+                Column {
+                    opts.forEach { (label, ms) ->
+                        TextButton({
+                            Reminders.schedule(ctx, num, t.name, ms); remindDlg = false
+                            Toast.makeText(ctx, "یادآوری تنظیم شد", Toast.LENGTH_SHORT).show()
+                        }, Modifier.fillMaxWidth()) { Text(label) }
+                    }
+                }
+            }, confirmButton = {}, dismissButton = { TextButton({ remindDlg = false }) { Text("انصراف") } })
     }
     if (picking) ContactPicker({ c -> ref = Pair(c.number, c.name); picking = false }, { picking = false })
     confirmDel?.let { ids ->
@@ -258,14 +291,29 @@ fun SettingsScreen() {
         "" -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             MenuItem("🎨", "ظاهر برنامه", "رنگ‌ها، نوشته‌ها، فونت و اعداد") { path = "look" }
             MenuItem("📞", "تماس و سیم‌کارت", "سیم‌کارت پیش‌فرض، مسدودسازی، صفحه قفل") { path = "calls" }
+            MenuItem("🧩", "ویژگی‌ها", "فعال یا غیرفعال‌کردن امکانات برنامه") { path = "features" }
             MenuItem("🔔", "اعلان‌ها", "تماس‌های بی‌پاسخ و نشان آیکون") { path = "notif" }
             MenuItem("👆", "حرکات و لمس", "لمس کوتاه، بلند و کشیدن در تاریخچه و مخاطبین") { path = "gest" }
             MenuItem("💾", "داده‌ها", "خروجی اکسل و مکالمات ضبط‌شده") { path = "data" }
             MenuItem("ℹ️", "دربارهٔ برنامه", "نسخه و توضیحات") { path = "about" }
         }
+        "features" -> SubPage("ویژگی‌ها", back) {
+            SectionCard("امکانات برنامه") {
+                Prefs.featureList.forEach { (k, label) ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(label, Modifier.weight(1f), fontSize = 14.sp)
+                        Switch(Prefs.on(k), { Prefs.setFlag(k, it) })
+                    }
+                }
+                Text("هر مورد غیرفعال شود، آن بخش نمایش داده نمی‌شود یا اجرا نمی‌شود. تنظیمات اعلان تماس بی‌پاسخ، «مزاحم نشو» و رد تماس ناشناس‌ها در بخش‌های خودشان هستند.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
         "look" -> SubPage("ظاهر برنامه", back) {
             MenuItem("🎨", "رنگ‌ها", "پس‌زمینه، کادرها، نوشته‌ها و رنگ اصلی") { path = "look/colors" }
             MenuItem("🔤", "نوشته و اعداد", "اندازه، فونت و نمایش فارسی/انگلیسی اعداد") { path = "look/text" }
+            MenuItem("🌙", "صفحه تماس", "تم تیره یا هماهنگ با برنامه") { path = "look/call" }
+            MenuItem("🧩", "قالب‌ها", "قالب شماره‌گیر، صفحه تماس و دکمهٔ پاسخ") { path = "look/templates" }
             OutlinedButton({ Prefs.reset() }, Modifier.fillMaxWidth()) { Text("بازگشت به تنظیمات پیش‌فرض ظاهر") }
         }
         "look/colors" -> SubPage("رنگ‌ها", { path = "look" }) {
@@ -276,6 +324,48 @@ fun SettingsScreen() {
                 ColorRow("رنگ اصلی (دکمه‌ها و تأکید)", Prefs.accentPresets, Prefs.accent) { Prefs.accent = it; Prefs.save() }
             }
             SectionCard("پیش‌نمایش") { Text("نمونه متن: سلام، این یک متن آزمایشی است ۱۲۳۴۵") }
+        }
+        "look/templates" -> SubPage("قالب‌ها", { path = "look" }) {
+            SectionCard("قالب شماره‌گیر") {
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("کلاسیک", "دایره‌ای", "مینیمال").forEachIndexed { i, n ->
+                        FilterChip(Prefs.dialerStyle == i, { Prefs.dialerStyle = i; Prefs.save() }, label = { Text(n) })
+                    }
+                }
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Keypad(Modifier.widthIn(max = 280.dp), keyHeight = 40.dp, style = Prefs.dialerStyle, onKey = {})
+                }
+            }
+            SectionCard("قالب صفحه تماس") {
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("گرادیان", "ساده", "تیره (AMOLED)").forEachIndexed { i, n ->
+                        FilterChip(Prefs.callTheme == i, { Prefs.callTheme = i; Prefs.save() }, label = { Text(n) })
+                    }
+                }
+                Text("«تیره (AMOLED)» پس‌زمینهٔ کاملاً مشکی دارد و در نمایشگرهای OLED مصرف باتری را کم می‌کند.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            SectionCard("شیوهٔ پاسخ به تماس") {
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("دکمه‌های گرد", "کشویی (iOS)", "کپسولی", "کشیدن بالا/پایین").forEachIndexed { i, n ->
+                        FilterChip(Prefs.answerStyle == i, { Prefs.answerStyle = i; Prefs.save() }, label = { Text(n) })
+                    }
+                }
+                Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Color(0xFF101820)).padding(16.dp)) {
+                    AnswerControls(Prefs.answerStyle, {}, {})
+                }
+                Text("پیش‌نمایش قابل امتحان است؛ در تماس واقعی همین حرکت پاسخ می‌دهد.", fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        "look/call" -> SubPage("تم صفحه تماس", { path = "look" }) {
+            SectionCard("تم صفحه مکالمه") {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(!Prefs.callDark, { Prefs.callDark = false; Prefs.save() }, label = { Text("مطابق برنامه") })
+                    FilterChip(Prefs.callDark, { Prefs.callDark = true; Prefs.save() }, label = { Text("🌙 تیره") })
+                }
+                Text("با انتخاب «تیره»، صفحهٔ تماس همیشه با رنگ‌های تیره نمایش داده می‌شود.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
         "look/text" -> SubPage("نوشته و اعداد", { path = "look" }) {
             SectionCard("اندازهٔ نوشته‌ها") {
@@ -297,8 +387,10 @@ fun SettingsScreen() {
         }
         "calls" -> SubPage("تماس و سیم‌کارت", back) {
             MenuItem("📶", "سیم‌کارت‌ها", "سیم‌کارت پیش‌فرض تماس") { path = "calls/sim" }
-            MenuItem("🚫", "مسدودسازی", "رد خودکار شماره‌های ناشناس") { path = "calls/block" }
-            MenuItem("🔒", "نمایش روی صفحه قفل", "مجوز اعلان تمام‌صفحه") { path = "calls/lock" }
+            MenuItem("🚫", "مسدودسازی", "شماره‌های مسدود و رد خودکار ناشناس‌ها") { path = "calls/block" }
+            MenuItem("🌙", "حالت مزاحم نشو", "رد خودکار تماس در ساعات مشخص") { path = "calls/quiet" }
+            MenuItem("💬", "پیامک‌های آماده رد تماس", "متن‌هایی که هنگام زنگ‌خوردن برای رد تماس انتخاب می‌کنید") { path = "calls/replies" }
+            MenuItem("🔒", "نمایش روی صفحه قفل", "مجوز اعلان تمام‌صفحه و روشن‌شدن صفحه") { path = "calls/lock" }
         }
         "calls/sim" -> SubPage("سیم‌کارت‌ها", { path = "calls" }) {
             SectionCard("سیم‌کارت‌های شناسایی‌شده") {
@@ -322,7 +414,41 @@ fun SettingsScreen() {
                     Switch(Prefs.rejectUnknown, { Prefs.rejectUnknown = it; Prefs.save() })
                 }
             }
+            BlockedListCard()
             Text("رد خودکار گروه‌ها و شماره‌های مشخص را از تب «گروه‌ها» و جزئیات هر مخاطب تنظیم کنید.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        "calls/quiet" -> SubPage("حالت مزاحم نشو", { path = "calls" }) {
+            SectionCard("رد خودکار در ساعات مشخص") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("فعال", Modifier.weight(1f)); Switch(Prefs.quietOn, { Prefs.quietOn = it; Prefs.save() })
+                }
+                Text(Jalali.fa("از ساعت ${Prefs.quietStart}:00 تا ${Prefs.quietEnd}:00"), fontWeight = FontWeight.Bold)
+                Text("ساعت شروع", fontSize = 12.sp)
+                Slider(Prefs.quietStart.toFloat(), { Prefs.quietStart = it.toInt() }, valueRange = 0f..23f, steps = 22, onValueChangeFinished = { Prefs.save() })
+                Text("ساعت پایان", fontSize = 12.sp)
+                Slider(Prefs.quietEnd.toFloat(), { Prefs.quietEnd = it.toInt() }, valueRange = 0f..23f, steps = 22, onValueChangeFinished = { Prefs.save() })
+                Text("در این بازه تماس همهٔ شماره‌ها خودکار رد می‌شود، به‌جز مخاطبینی که «علاقه‌مندی» علامت زده‌اید. رد شدن در تاریخچه ثبت می‌شود.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        "calls/replies" -> SubPage("پیامک‌های آماده رد تماس", { path = "calls" }) {
+            val list = Prefs.quickReplies
+            SectionCard("پیام‌ها") {
+                list.forEachIndexed { i, m ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(m, { v ->
+                            Prefs.quickReplies = list.toMutableList().also { it[i] = v.take(160) }; Prefs.saveReplies()
+                        }, Modifier.weight(1f), minLines = 1, maxLines = 4)
+                        IconButton({ Prefs.quickReplies = list.filterIndexed { j, _ -> j != i }; Prefs.saveReplies() }) { Icon(Icons.Default.Delete, "حذف") }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button({ Prefs.quickReplies = list + "پیام جدید"; Prefs.saveReplies() }) { Text("افزودن پیام") }
+                    TextButton({ Prefs.quickReplies = Prefs.defaultReplies; Prefs.saveReplies() }) { Text("بازگشت به پیش‌فرض") }
+                }
+                Text("حداکثر ۱۶۰ نویسه. این پیام‌ها هنگام زنگ‌خوردن تماس، بالای دکمه‌های پاسخ و رد نمایش داده می‌شوند و با زدن روی هرکدام، تماس رد و پیامک ارسال می‌شود.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
         "calls/lock" -> SubPage("نمایش روی صفحه قفل", { path = "calls" }) {
             val nm = ctx.getSystemService(NotificationManager::class.java)
@@ -332,6 +458,13 @@ fun SettingsScreen() {
                 if (!ok) Button({
                     ctx.startActivity(Intent("android.settings.MANAGE_APP_USE_FULL_SCREEN_INTENT", Uri.parse("package:" + ctx.packageName)))
                 }) { Text("باز کردن تنظیمات مجوز") }
+                Text("اگر هنوز صفحه روشن نمی‌شود: در تنظیمات گوشی برای این برنامه «نمایش روی صفحه قفل»، «باز شدن پنجره در پس‌زمینه» (شیائومی، سامسونگ و…) و «بدون محدودیت باتری» را فعال کنید.", fontSize = 12.sp)
+                OutlinedButton({
+                    ctx.startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + ctx.packageName)))
+                }) { Text("باز کردن تنظیمات برنامه") }
+                if (!android.provider.Settings.canDrawOverlays(ctx)) OutlinedButton({
+                    ctx.startActivity(Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + ctx.packageName)))
+                }) { Text("اجازهٔ نمایش روی سایر برنامه‌ها") }
                 Text("اگر گوشی باز و در حال استفاده باشد، ممکن است اندروید یا سازندهٔ گوشی به‌جای تمام‌صفحه یک اعلان بالای صفحه نشان دهد.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -384,14 +517,18 @@ fun SettingsScreen() {
             }
         }
         "data" -> SubPage("داده‌ها", back) {
+            MenuItem("📈", "آمار تماس‌ها", "خلاصه، پرمکالمه‌ترین‌ها و نمودار ماهانه") { path = "data/stats" }
+            MenuItem("🗄", "پشتیبان‌گیری و بازیابی", "یادداشت‌ها، گروه‌ها، معرف‌ها و علاقه‌مندی‌ها") { path = "data/backup" }
             MenuItem("📊", "خروجی اکسل", "مخاطبین یا تاریخچه تماس‌ها") { path = "data/excel" }
             MenuItem("🎙", "مکالمات ضبط‌شده", "پخش و حذف ضبط‌ها") { path = "data/rec" }
         }
+        "data/stats" -> SubPage("آمار تماس‌ها", { path = "data" }) { StatsContent() }
+        "data/backup" -> SubPage("پشتیبان‌گیری و بازیابی", { path = "data" }) { BackupContent() }
         "data/excel" -> SubPage("خروجی اکسل", { path = "data" }) { ExcelContent() }
         "data/rec" -> SubPage("مکالمات ضبط‌شده", { path = "data" }) { RecordingsContent() }
         else -> SubPage("دربارهٔ برنامه", back) {
             SectionCard("مدیریت تماس") {
-                Text("نسخه ۰٫۳")
+                Text("نسخه ۰٫۶")
                 Text("شماره‌گیر، تاریخچه، مخاطبین، یادداشت هنگام تماس، گروه‌بندی و رد خودکار تماس.", fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -463,5 +600,136 @@ fun RecordingsContent() {
         }
         Text("توجه: ضبط با میکروفون انجام می‌شود و در بسیاری از گوشی‌ها فقط با روشن‌بودن بلندگو صدای طرف مقابل ضبط می‌شود. رعایت قوانین مربوط به ضبط مکالمه بر عهدهٔ کاربر است.",
             fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+
+// ---------------- اجزای جدید ----------------
+
+@Composable
+fun BarChart(labels: List<String>, values: List<Long>, fmt: (Long) -> String) {
+    val cs = MaterialTheme.colorScheme
+    val mx = (values.maxOrNull() ?: 0L).coerceAtLeast(1L)
+    Row(Modifier.fillMaxWidth().height(160.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+        values.forEachIndexed { i, v ->
+            Column(Modifier.weight(1f).fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Bottom) {
+                if (v > 0) Text(fmt(v), fontSize = 10.sp)
+                Box(Modifier.fillMaxWidth().height((110f * v.toFloat() / mx.toFloat()).coerceAtLeast(3f).dp)
+                    .clip(RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp))
+                    .background(Brush.verticalGradient(listOf(cs.primary, cs.primary.copy(alpha = 0.45f)))))
+                Text(labels[i], fontSize = 10.sp, maxLines = 1)
+            }
+        }
+    }
+}
+
+@Composable
+fun StatsContent() {
+    val cs = MaterialTheme.colorScheme
+    val calls = Repo.calls
+    if (calls.isEmpty()) { SectionCard("آمار") { Text("تاریخچه‌ای برای نمایش وجود ندارد.", fontSize = 13.sp) }; return }
+    val total = calls.sumOf { it.duration }
+    SectionCard("خلاصهٔ کل تاریخچه") {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            Stat("کل تماس‌ها", Jalali.fa(calls.size))
+            Stat("ورودی", Jalali.fa(calls.count { it.type == 1 }))
+            Stat("خروجی", Jalali.fa(calls.count { it.type == 2 }))
+        }
+        Spacer(Modifier.height(6.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            Stat("بی‌پاسخ", Jalali.fa(calls.count { it.type == 3 }))
+            Stat("ردشده", Jalali.fa(calls.count { it.type == 5 || it.type == 6 }))
+            Stat("مجموع مکالمه", fmtDur(total))
+        }
+    }
+    val top = remember(calls) {
+        calls.filter { norm(it.number).isNotEmpty() }.groupBy { norm(it.number) }
+            .map { (k, v) -> Triple(k, v.sumOf { it.duration }, v.size) }.sortedByDescending { it.second }.take(5)
+    }
+    SectionCard("پرمکالمه‌ترین‌ها") {
+        top.forEach { (k, dur, cnt) ->
+            val first = calls.first { norm(it.number) == k }
+            val nm = first.name.ifBlank { Repo.names[k] ?: "" }.ifBlank { Jalali.fa(first.number) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Avatar(nm, 36.dp)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(nm, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                    Text(Jalali.fa("$cnt تماس"), fontSize = 11.sp, color = cs.onSurfaceVariant)
+                }
+                Text(fmtDur(dur), fontWeight = FontWeight.Bold, color = cs.primary)
+            }
+        }
+    }
+    val cur = Jalali.monthKey(System.currentTimeMillis())
+    val keys = ((cur - 5)..cur).toList()
+    SectionCard("تعداد تماس در ۶ ماه اخیر") {
+        BarChart(keys.map { Jalali.monthName(it) }, keys.map { k -> calls.count { Jalali.monthKey(it.date) == k }.toLong() }) { Jalali.fa(it.toString()) }
+    }
+    SectionCard("زمان مکالمه در ۶ ماه اخیر") {
+        BarChart(keys.map { Jalali.monthName(it) }, keys.map { k -> calls.filter { Jalali.monthKey(it.date) == k }.sumOf { it.duration } }) { fmtMin(it) }
+    }
+}
+
+@Composable
+fun BackupContent() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val exp = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) scope.launch(Dispatchers.IO) {
+            val ok = try {
+                ctx.contentResolver.openOutputStream(uri)?.use { it.write(Db.get(ctx).exportJson().toByteArray(Charsets.UTF_8)) }
+                true
+            } catch (e: Exception) { false }
+            withContext(Dispatchers.Main) { Toast.makeText(ctx, if (ok) "پشتیبان ذخیره شد" else "خطا در ذخیره", Toast.LENGTH_LONG).show() }
+        }
+    }
+    val imp = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) scope.launch(Dispatchers.IO) {
+            val ok = try {
+                val t = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) } ?: ""
+                Db.get(ctx).importJson(t)
+            } catch (e: Exception) { false }
+            withContext(Dispatchers.Main) {
+                dbTick.intValue++
+                Toast.makeText(ctx, if (ok) "بازیابی انجام شد" else "فایل پشتیبان معتبر نیست", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    SectionCard("پشتیبان‌گیری") {
+        Text("یادداشت‌ها، گروه‌ها، عضویت‌ها، معرف‌ها، علاقه‌مندی‌ها، شماره‌های مسدود و پیامک‌های آماده در یک فایل ذخیره می‌شوند؛ برای انتقال به گوشی جدید یا بعد از نصب دوباره مفید است.",
+            fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button({ exp.launch("callmanager-backup.json") }, Modifier.weight(1f)) { Text("ذخیره پشتیبان") }
+            OutlinedButton({ imp.launch(arrayOf("*/*")) }, Modifier.weight(1f)) { Text("بازیابی از فایل") }
+        }
+    }
+}
+
+@Composable
+fun BlockedListCard() {
+    val ctx = LocalContext.current
+    val db = remember { Db.get(ctx) }
+    var list by remember { mutableStateOf(db.allBlocked()) }
+    var add by remember { mutableStateOf("") }
+    SectionCard("شماره‌های مسدود (رد خودکار)") {
+        if (list.isEmpty()) Text("شماره‌ای ثبت نشده است.", fontSize = 13.sp)
+        list.forEach { n ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(Repo.names[n] ?: Jalali.fa(n))
+                    if (Repo.names[n] != null) Text(Jalali.fa(n), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                IconButton({ db.setBlocked(n, false); list = db.allBlocked() }) { Icon(Icons.Default.Delete, "حذف") }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(add, { add = it }, Modifier.weight(1f), singleLine = true, placeholder = { Text("افزودن شماره") })
+            Spacer(Modifier.width(8.dp))
+            Button({
+                val e = Jalali.en(add)
+                if (norm(e).isNotEmpty()) { db.setBlocked(e, true); add = ""; list = db.allBlocked() }
+            }) { Text("افزودن") }
+        }
     }
 }

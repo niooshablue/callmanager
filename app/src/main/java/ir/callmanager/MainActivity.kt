@@ -149,17 +149,24 @@ fun RecentsScreen(onOpen: (DetailTarget) -> Unit) {
     val cs = MaterialTheme.colorScheme
     val deleter = rememberCallDeleter()
     var filter by remember { mutableIntStateOf(0) }
-    var limit by remember(filter) { mutableIntStateOf(30) }
+    var query by remember { mutableStateOf("") }
+    var limit by remember(filter, query) { mutableIntStateOf(30) }
     val selected = remember { mutableStateListOf<Long>() }
     var selMode by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf<List<Long>?>(null) }
     val all = Repo.calls
-    val list = remember(all, filter) {
-        when (filter) {
+    val list = remember(all, filter, query) {
+        val base = when (filter) {
             1 -> all.filter { it.type == 3 }
             2 -> all.filter { it.type == 1 }
             3 -> all.filter { it.type == 2 }
             else -> all
+        }
+        val qn = Jalali.en(query).trim().lowercase()
+        val qd = qn.filter { it.isDigit() }
+        if (qn.isEmpty()) base else base.filter { r ->
+            val nm = r.name.ifBlank { Repo.names[norm(r.number)] ?: "" }.lowercase()
+            nm.contains(qn) || (qd.isNotEmpty() && r.number.filter { it.isDigit() }.contains(qd))
         }
     }
     val shown = remember(list, limit) { list.take(limit) }
@@ -202,6 +209,9 @@ fun RecentsScreen(onOpen: (DetailTarget) -> Unit) {
                 IconButton({ if (selected.isNotEmpty()) confirm = selected.toList() }) { Icon(Icons.Default.Delete, "حذف", tint = Color(0xFFD32F2F)) }
             }
         } else {
+            OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), singleLine = true,
+                placeholder = { Text("جستجو در تاریخچه (نام یا شماره)") }, leadingIcon = { Icon(Icons.Default.Search, null) },
+                shape = RoundedCornerShape(28.dp))
             Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("همه", "بی‌پاسخ", "ورودی", "خروجی").forEachIndexed { i, t -> FilterChip(filter == i, { filter = i }, label = { Text(t) }) }
             }
@@ -263,8 +273,12 @@ fun DialerScreen(initial: String, onOpen: (DetailTarget) -> Unit) {
     val q = num.filter { it.isDigit() }
     val contacts = Repo.contacts
     val calls = Repo.calls
-    val results = remember(q, contacts, calls) {
-        if (q.isEmpty()) emptyList<Hit>()
+    val favs = remember(dbTick.intValue) { Db.get(ctx).allFavs() }
+    val favOn = Prefs.on("favorites"); val sugOn = Prefs.on("dialerSuggest")
+    val results = remember(q, contacts, calls, favs, favOn, sugOn) {
+        if (q.isEmpty() && !favOn) emptyList<Hit>()
+        else if (q.isNotEmpty() && !sugOn) emptyList<Hit>()
+        else if (q.isEmpty()) contacts.filter { norm(it.number) in favs }.take(12).map { Hit(it.name, it.number) }
         else {
             val a = contacts.filter { it.digits.contains(q) }
                 .sortedBy { !it.digits.startsWith(q) }.take(30).map { Hit(it.name, it.number) }
@@ -279,9 +293,13 @@ fun DialerScreen(initial: String, onOpen: (DetailTarget) -> Unit) {
     }
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            if (q.isEmpty()) Empty("شماره را وارد کنید؛ مخاطبین و تماس‌های مشابه اینجا نمایش داده می‌شوند")
+            if (q.isEmpty() && results.isEmpty()) Empty("شماره را وارد کنید؛ مخاطبین و تماس‌های مشابه اینجا نمایش داده می‌شوند")
             else if (results.isEmpty()) Empty("موردی یافت نشد")
             else LazyColumn {
+                if (q.isEmpty()) item {
+                    Text("⭐ علاقه‌مندی‌ها", Modifier.padding(start = 20.dp, top = 8.dp, bottom = 4.dp), fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                }
                 items(results) { h ->
                     ListItem(
                         modifier = Modifier.clickable { num = h.number },
@@ -338,13 +356,14 @@ fun ContactsScreen(onOpen: (DetailTarget) -> Unit) {
     var gsel by remember { mutableIntStateOf(0) }
     val groups = remember(dbTick.intValue) { db.groups() }
     val members = remember(dbTick.intValue) { db.allMembers() }
+    val favs = remember(dbTick.intValue) { db.allFavs() }
     val all = Repo.contacts
-    val list = remember(all, q, gsel, members) {
+    val list = remember(all, q, gsel, members, favs) {
         val qn = Jalali.en(q).trim().lowercase()
         val qd = qn.filter { it.isDigit() }
         all.filter { c ->
             (qn.isEmpty() || c.lname.contains(qn) || (qd.isNotEmpty() && c.digits.contains(qd))) &&
-                (gsel == 0 || members[norm(c.number)]?.contains(gsel) == true)
+                (gsel == 0 || (gsel == -1 && norm(c.number) in favs) || (gsel > 0 && members[norm(c.number)]?.contains(gsel) == true))
         }
     }
     fun perform(a: Int, c: Contact) {
@@ -367,6 +386,7 @@ fun ContactsScreen(onOpen: (DetailTarget) -> Unit) {
         }
         Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(gsel == 0, { gsel = 0 }, label = { Text("همه") })
+            FilterChip(gsel == -1, { gsel = -1 }, label = { Text("⭐ علاقه‌مندی‌ها") })
             groups.forEach { g -> FilterChip(gsel == g.id, { gsel = g.id }, label = { Text(g.name) }) }
         }
         Text(Jalali.fa("${list.size} مخاطب"), Modifier.padding(horizontal = 20.dp, vertical = 6.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -391,27 +411,44 @@ fun GroupsScreen() {
     var adding by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf("") }
     val members = remember(groups, dbTick.intValue) { db.allMembers() }
+    val cs = MaterialTheme.colorScheme
     fun reload() { groups = db.groups(); dbTick.intValue++ }
     Column {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("گروه‌های مخاطبین", Modifier.weight(1f), fontSize = 18.sp, fontWeight = FontWeight.Bold)
             FilledIconButton({ adding = true }) { Icon(Icons.Default.Add, "گروه جدید") }
         }
-        Text("برای افزودن مخاطب به گروه، روی مخاطب بزنید و گروه را انتخاب کنید. با روشن‌کردن سوییچ، تماس اعضای گروه خودکار رد می‌شود.",
-            Modifier.padding(horizontal = 16.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("برای افزودن مخاطب به گروه، روی مخاطب بزنید و گروه را انتخاب کنید.",
+            Modifier.padding(horizontal = 16.dp), fontSize = 12.sp, color = cs.onSurfaceVariant)
+        if (groups.any { it.allowOnly } && Prefs.on("allowGroups")) {
+            Card(Modifier.fillMaxWidth().padding(12.dp, 8.dp), shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = cs.tertiaryContainer)) {
+                Text("⚠️ حالت «فقط گروه مجاز» فعال است: فقط اعضای گروه‌های علامت‌خورده می‌توانند تماس بگیرند و بقیهٔ تماس‌ها (حتی ناشناس) رد می‌شود.",
+                    Modifier.padding(12.dp), fontSize = 13.sp, color = cs.onTertiaryContainer)
+            }
+        }
         LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(groups) { g ->
                 val cnt = members.values.count { g.id in it }
-                Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)) {
-                    Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Avatar(g.name, 46.dp)
-                        Spacer(Modifier.width(12.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(g.name, fontWeight = FontWeight.Bold)
-                            Text(Jalali.fa("$cnt عضو") + if (g.autoReject) " • رد خودکار" else "", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = cs.surfaceContainerHigh)) {
+                    Column(Modifier.padding(14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Avatar(g.name, 46.dp)
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(g.name, fontWeight = FontWeight.Bold)
+                                Text(Jalali.fa("$cnt عضو"), fontSize = 12.sp, color = cs.onSurfaceVariant)
+                            }
+                            IconButton({ db.deleteGroup(g.id); reload() }) { Icon(Icons.Default.Delete, "حذف") }
                         }
-                        Switch(g.autoReject, { db.setGroupReject(g.id, it); reload() })
-                        IconButton({ db.deleteGroup(g.id); reload() }) { Icon(Icons.Default.Delete, "حذف") }
+                        Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("🚫 رد خودکار تماس اعضا", Modifier.weight(1f), fontSize = 14.sp)
+                            Switch(g.autoReject, { db.setGroupReject(g.id, it); if (it) db.setGroupAllow(g.id, false); reload() })
+                        }
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text("✅ فقط اعضای این گروه مجازند (بقیه رد شوند)", Modifier.weight(1f), fontSize = 14.sp)
+                            Switch(g.allowOnly, { db.setGroupAllow(g.id, it); if (it) db.setGroupReject(g.id, false); reload() })
+                        }
                     }
                 }
             }
