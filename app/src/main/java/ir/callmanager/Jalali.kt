@@ -18,42 +18,6 @@ object Jalali {
         return Triple(jy, jm, jd)
     }
 
-    /** تبدیل تاریخ شمسی به میلادی (مناسب برای ذخیره زمان در AlarmManager). */
-    fun toGregorian(jy0: Int, jm: Int, jd: Int): Triple<Int, Int, Int> {
-        require(jm in 1..12 && jd >= 1)
-        val jy = jy0 + 1595
-        var days = -355668L + 365L * jy + (jy / 33) * 8L + ((jy % 33 + 3) / 4) + jd
-        days += if (jm < 7) (jm - 1) * 31L else (jm - 7) * 30L + 186L
-        var gy = 400L * (days / 146097L)
-        days %= 146097L
-        if (days > 36524L) {
-            gy += 100L * ((days - 1L) / 36524L)
-            days = (days - 1L) % 36524L
-            if (days >= 365L) days++
-        }
-        gy += 4L * (days / 1461L); days %= 1461L
-        if (days > 365L) { gy += (days - 1L) / 365L; days = (days - 1L) % 365L }
-        var gd = (days + 1L).toInt()
-        val year = gy.toInt()
-        val leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
-        val lengths = intArrayOf(31, if (leap) 29 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
-        var gm = 1
-        while (gm <= 12 && gd > lengths[gm - 1]) { gd -= lengths[gm - 1]; gm++ }
-        return Triple(year, gm, gd)
-    }
-
-    fun daysInMonth(year: Int, month: Int): Int = when (month) {
-        in 1..6 -> 31
-        in 7..11 -> 30
-        else -> {
-            val a = toGregorian(year, 1, 1)
-            val b = toGregorian(year + 1, 1, 1)
-            val start = java.time.LocalDate.of(a.first, a.second, a.third)
-            val next = java.time.LocalDate.of(b.first, b.second, b.third)
-            if (java.time.temporal.ChronoUnit.DAYS.between(start, next) == 366L) 30 else 29
-        }
-    }
-
     val months = listOf("فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور", "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند")
 
     /** نمایش اعداد به فارسی یا انگلیسی طبق تنظیمات */

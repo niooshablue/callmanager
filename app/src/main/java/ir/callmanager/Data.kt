@@ -98,14 +98,7 @@ object Repo {
                 val ct = loadContacts(app)
                 contacts = ct
                 names = ct.associate { norm(it.number) to it.name }
-                val freshCalls = loadCalls(app)
-                calls = freshCalls
-                // آخرین SIM ثبت‌شده در تاریخچه (ورودی یا خروجی) مبنای تماس بعدی با همان شماره است.
-                try {
-                    val db = Db.get(app)
-                    freshCalls.asSequence().filter { it.simId.isNotBlank() && norm(it.number).isNotBlank() }
-                        .distinctBy { norm(it.number) }.forEach { db.saveSimChoice(it.number, it.simId) }
-                } catch (_: Exception) { }
+                calls = loadCalls(app)
             } catch (e: Exception) {
             } finally {
                 loadingContacts = false
@@ -157,7 +150,6 @@ fun placeCall(c: Context, number: String, h: PhoneAccountHandle?) {
         val ex = Bundle()
         if (h != null) ex.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, h)
         tm.placeCall(Uri.fromParts("tel", number, null), ex)
-        if (h != null) try { Db.get(c).saveSimChoice(number, h.id) } catch (_: Exception) { }
     } catch (e: SecurityException) {
         Toast.makeText(c, "دسترسی تماس داده نشده است", Toast.LENGTH_SHORT).show()
     }
@@ -166,18 +158,11 @@ fun placeCall(c: Context, number: String, h: PhoneAccountHandle?) {
 /** تماس با سیم‌کارت پیش‌فرض گوشی؛ اگر پیش‌فرض نبود و دو سیم‌کارت بود، انتخاب می‌پرسد */
 fun callNumber(c: Context, number: String) {
     val s = Repo.sims
-    val savedId = try { Db.get(c).simChoice(number) } catch (_: Exception) { null }
-    val lastLogId = Repo.calls.asSequence().filter { norm(it.number) == norm(number) && it.simId.isNotBlank() }
-        .maxByOrNull { it.date }?.simId
-    val preferred = s.firstOrNull { it.handle.id == savedId } ?: s.firstOrNull { it.handle.id == lastLogId }
-    if (preferred != null) placeCall(c, number, preferred.handle)
-    else {
-        val def = s.firstOrNull { it.isDefault }
-        if (def != null) placeCall(c, number, def.handle)
-        else if (s.size == 1) placeCall(c, number, s[0].handle)
-        else if (s.size > 1) Repo.pickNumber = number
-        else placeCall(c, number, null)
-    }
+    val def = s.firstOrNull { it.isDefault }
+    if (def != null) placeCall(c, number, def.handle)
+    else if (s.size == 1) placeCall(c, number, s[0].handle)
+    else if (s.size > 1) Repo.pickNumber = number
+    else placeCall(c, number, null)
 }
 
 fun sendSms(c: Context, number: String) {

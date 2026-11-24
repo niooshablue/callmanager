@@ -2,7 +2,6 @@
 package ir.callmanager
 
 import android.app.NotificationManager
-import android.app.TimePickerDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentUris
@@ -47,8 +46,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.util.Calendar
-import java.util.Locale
 
 // ---------------- جزئیات مخاطب ----------------
 
@@ -66,9 +63,6 @@ fun DetailScreen(t: DetailTarget, onBack: () -> Unit) {
     var picking by remember { mutableStateOf(false) }
     var fav by remember { mutableStateOf(db.isFav(num)) }
     var remindDlg by remember { mutableStateOf(false) }
-    var showJalaliDatePicker by remember { mutableStateOf(false) }
-    var reminderTick by remember { mutableIntStateOf(0) }
-    val activeReminder = remember(num, reminderTick) { Reminders.all(ctx).firstOrNull { norm(it.number) == norm(num) } }
     var confirmDel by remember { mutableStateOf<List<Long>?>(null) }
     val deleter = rememberCallDeleter()
     val history = remember(Repo.calls, num) { Repo.calls.filter { norm(it.number) == norm(num) } }
@@ -97,10 +91,7 @@ fun DetailScreen(t: DetailTarget, onBack: () -> Unit) {
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 Avatar(t.name.ifBlank { num }, 96.dp)
                 Spacer(Modifier.height(10.dp))
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-                    Text(t.name.ifBlank { Jalali.fa(num) }, fontSize = 24.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
-                    if (activeReminder != null) { Spacer(Modifier.width(6.dp)); Icon(Icons.Default.NotificationsActive, "یادآوری فعال", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp)) }
-                }
+                Text(t.name.ifBlank { Jalali.fa(num) }, fontSize = 24.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
                 if (t.name.isNotBlank()) Text(Jalali.fa(num), color = cs.onSurfaceVariant)
                 if (mem.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     groups.filter { it.id in mem }.forEach { g -> AssistChip({}, label = { Text(g.name, fontSize = 12.sp) }) }
@@ -132,22 +123,6 @@ fun DetailScreen(t: DetailTarget, onBack: () -> Unit) {
                 }
             }
 
-            if (activeReminder != null) {
-                SectionCard("یادآوری فعال") {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.NotificationsActive, null, tint = MaterialTheme.colorScheme.primary)
-                        Spacer(Modifier.width(8.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text("تماس با این مخاطب")
-                            Text(Jalali.format(activeReminder.atMillis),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                        }
-                        IconButton({ Reminders.delete(ctx, num, activeReminder.atMillis); reminderTick++; Toast.makeText(ctx, "یادآوری حذف شد", Toast.LENGTH_SHORT).show() }) {
-                            Icon(Icons.Default.DeleteOutline, "حذف یادآوری", tint = MaterialTheme.colorScheme.error)
-                        }
-                    }
-                }
-            }
             SectionCard("📝 یادداشت (هنگام تماس نمایش داده می‌شود)") {
                 OutlinedTextField(note, { note = it }, Modifier.fillMaxWidth(), minLines = 2, placeholder = { Text("یادداشت…") })
             }
@@ -222,38 +197,20 @@ fun DetailScreen(t: DetailTarget, onBack: () -> Unit) {
         }
     }
     if (remindDlg) {
-        fun chooseCustomDateTime() { showJalaliDatePicker = true }
+        val opts = listOf("۱۵ دقیقه دیگر" to 15L * 60_000L, "یک ساعت دیگر" to 3_600_000L,
+            "سه ساعت دیگر" to 3L * 3_600_000L, "فردا ساعت ۹ صبح" to Reminders.tomorrowNine())
         AlertDialog(onDismissRequest = { remindDlg = false }, title = { Text("یادآوری تماس با " + t.name.ifBlank { Jalali.fa(num) }) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("زمان یادآوری را انتخاب کنید", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
-                    listOf("۱۵ دقیقه دیگر" to 15L * 60_000L, "یک ساعت دیگر" to 60L * 60_000L).forEach { (label, delay) ->
-                        OutlinedButton({ Reminders.schedule(ctx, num, t.name, System.currentTimeMillis() + delay); reminderTick++; remindDlg = false
-                            Toast.makeText(ctx, "یادآوری تنظیم شد", Toast.LENGTH_SHORT).show() }, Modifier.fillMaxWidth()) { Text(label) }
-                    }
-                    Button({ chooseCustomDateTime() }, Modifier.fillMaxWidth()) {
-                        Icon(Icons.Default.CalendarMonth, null); Spacer(Modifier.width(8.dp)); Text("انتخاب تاریخ و ساعت دلخواه")
+                Column {
+                    opts.forEach { (label, ms) ->
+                        TextButton({
+                            Reminders.schedule(ctx, num, t.name, ms); remindDlg = false
+                            Toast.makeText(ctx, "یادآوری تنظیم شد", Toast.LENGTH_SHORT).show()
+                        }, Modifier.fillMaxWidth()) { Text(label) }
                     }
                 }
             }, confirmButton = {}, dismissButton = { TextButton({ remindDlg = false }) { Text("انصراف") } })
     }
-    if (showJalaliDatePicker) JalaliDatePickerDialog(
-        onDismiss = { showJalaliDatePicker = false },
-        onDateSelected = { jy, jm, jd ->
-            val (gy, gm, gd) = Jalali.toGregorian(jy, jm, jd)
-            val date = Calendar.getInstance().apply { set(gy, gm - 1, gd, 0, 0, 0); set(Calendar.MILLISECOND, 0) }
-            val now = Calendar.getInstance()
-            TimePickerDialog(ctx, { _, hour, minute ->
-                date.set(Calendar.HOUR_OF_DAY, hour); date.set(Calendar.MINUTE, minute)
-                if (date.timeInMillis > System.currentTimeMillis()) {
-                    Reminders.schedule(ctx, num, t.name, date.timeInMillis); reminderTick++
-                    Toast.makeText(ctx, "یادآوری ثبت شد", Toast.LENGTH_SHORT).show()
-                } else Toast.makeText(ctx, "زمان انتخابی باید در آینده باشد", Toast.LENGTH_LONG).show()
-            }, now.get(Calendar.HOUR_OF_DAY), now.get(Calendar.MINUTE), true).show()
-            showJalaliDatePicker = false
-            remindDlg = false
-        }
-    )
     if (picking) ContactPicker({ c -> ref = Pair(c.number, c.name); picking = false }, { picking = false })
     confirmDel?.let { ids ->
         AlertDialog(onDismissRequest = { confirmDel = null }, title = { Text("حذف از تاریخچه") },
@@ -261,53 +218,6 @@ fun DetailScreen(t: DetailTarget, onBack: () -> Unit) {
             confirmButton = { TextButton({ deleter(ids); confirmDel = null }) { Text("حذف", color = Color(0xFFD32F2F)) } },
             dismissButton = { TextButton({ confirmDel = null }) { Text("انصراف") } })
     }
-}
-
-@Composable
-fun JalaliDatePickerDialog(onDismiss: () -> Unit, onDateSelected: (Int, Int, Int) -> Unit) {
-    val today = Calendar.getInstance().timeInMillis
-    val (todayYear, todayMonth, todayDay) = Jalali.parts(today)
-    var year by remember { mutableIntStateOf(todayYear) }
-    var month by remember { mutableIntStateOf(todayMonth) }
-    var selectedDay by remember { mutableIntStateOf(todayDay) }
-    val first = remember(year, month) {
-        val (gy, gm, gd) = Jalali.toGregorian(year, month, 1)
-        Calendar.getInstance().apply { set(gy, gm - 1, gd) }.get(Calendar.DAY_OF_WEEK) % 7
-    }
-    val days = Jalali.daysInMonth(year, month)
-    AlertDialog(onDismissRequest = onDismiss,
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { if (month == 1) { month = 12; year-- } else month--; selectedDay = 1 }) { Icon(Icons.Default.ChevronRight, "ماه قبل") }
-                Text("${Jalali.months[month - 1]} ${Jalali.fa(year)}", Modifier.weight(1f), textAlign = TextAlign.Center, fontWeight = FontWeight.Bold)
-                IconButton(onClick = { if (month == 12) { month = 1; year++ } else month++; selectedDay = 1 }) { Icon(Icons.Default.ChevronLeft, "ماه بعد") }
-            }
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Row(Modifier.fillMaxWidth()) {
-                    listOf("ش", "ی", "د", "س", "چ", "پ", "ج").forEach { Text(it, Modifier.weight(1f), textAlign = TextAlign.Center, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold) }
-                }
-                val cells = List(first) { 0 } + (1..days).toList()
-                cells.chunked(7).forEach { week ->
-                    Row(Modifier.fillMaxWidth()) {
-                        week.forEach { day ->
-                            Box(Modifier.weight(1f).height(38.dp), contentAlignment = Alignment.Center) {
-                                if (day > 0) {
-                                    if (day == selectedDay) FilledTonalButton(onClick = { selectedDay = day },
-                                        modifier = Modifier.size(36.dp), contentPadding = PaddingValues(0.dp)) { Text(Jalali.fa(day), fontSize = 12.sp) }
-                                    else TextButton(onClick = { selectedDay = day }, modifier = Modifier.size(36.dp), contentPadding = PaddingValues(0.dp)) { Text(Jalali.fa(day), fontSize = 12.sp) }
-                                }
-                            }
-                        }
-                        repeat(7 - week.size) { Spacer(Modifier.weight(1f)) }
-                    }
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = { onDateSelected(year, month, selectedDay) }) { Text("تأیید تاریخ") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("انصراف") } }
-    )
 }
 
 @Composable
@@ -379,18 +289,14 @@ fun SettingsScreen() {
 
     when (path) {
         "" -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            MenuItem("👥", "مدیریت گروه‌ها", "ساخت گروه و تنظیم رد یا مجاز بودن تماس‌ها") { path = "groups" }
             MenuItem("🎨", "ظاهر برنامه", "رنگ‌ها، نوشته‌ها، فونت و اعداد") { path = "look" }
             MenuItem("📞", "تماس و سیم‌کارت", "سیم‌کارت پیش‌فرض، مسدودسازی، صفحه قفل") { path = "calls" }
             MenuItem("🧩", "ویژگی‌ها", "فعال یا غیرفعال‌کردن امکانات برنامه") { path = "features" }
-            MenuItem("🔔", "یادآوری‌های تماس", "مشاهده و حذف یادآوری‌های ثبت‌شده") { path = "reminders" }
-            MenuItem("📣", "اعلان‌ها", "تماس‌های بی‌پاسخ و نشان آیکون") { path = "notif" }
+            MenuItem("🔔", "اعلان‌ها", "تماس‌های بی‌پاسخ و نشان آیکون") { path = "notif" }
             MenuItem("👆", "حرکات و لمس", "لمس کوتاه، بلند و کشیدن در تاریخچه و مخاطبین") { path = "gest" }
             MenuItem("💾", "داده‌ها", "خروجی اکسل و مکالمات ضبط‌شده") { path = "data" }
             MenuItem("ℹ️", "دربارهٔ برنامه", "نسخه و توضیحات") { path = "about" }
         }
-        "groups" -> SubPage("مدیریت گروه‌ها", back) { GroupsScreen() }
-        "reminders" -> SubPage("یادآوری‌های تماس", back) { ReminderListContent() }
         "features" -> SubPage("ویژگی‌ها", back) {
             SectionCard("امکانات برنامه") {
                 Prefs.featureList.forEach { (k, label) ->
@@ -467,12 +373,8 @@ fun SettingsScreen() {
                 Slider(Prefs.fontScale, { Prefs.fontScale = it }, valueRange = 0.8f..1.6f, onValueChangeFinished = { Prefs.save() })
             }
             SectionCard("فونت نوشته‌ها") {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Prefs.fontNames.forEachIndexed { i, n ->
-                        FilterChip(Prefs.font == i, { Prefs.font = i; Prefs.save() }, label = { Text(n) })
-                    }
-                    Text("فونت‌های همراه برنامه متن‌باز هستند و برای نمایش فارسی بهینه شده‌اند. نام‌های وزیری‌مانند، یکان‌مانند و نازنین‌مانند توصیف سبک بصری‌اند و به معنی استفاده از فایل تجاری همان فونت‌ها نیست.",
-                        fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Prefs.fontNames.forEachIndexed { i, n -> FilterChip(Prefs.font == i, { Prefs.font = i; Prefs.save() }, label = { Text(n) }) }
                 }
             }
             SectionCard("نمایش اعداد") {
@@ -489,7 +391,6 @@ fun SettingsScreen() {
             MenuItem("🌙", "حالت مزاحم نشو", "رد خودکار تماس در ساعات مشخص") { path = "calls/quiet" }
             MenuItem("💬", "پیامک‌های آماده رد تماس", "متن‌هایی که هنگام زنگ‌خوردن برای رد تماس انتخاب می‌کنید") { path = "calls/replies" }
             MenuItem("🔒", "نمایش روی صفحه قفل", "مجوز اعلان تمام‌صفحه و روشن‌شدن صفحه") { path = "calls/lock" }
-            MenuItem("🪟", "پنجره شناور و اجرای پس‌زمینه", "کارت پاسخ سریع روی برنامه‌ها و مدیریت محدودیت باتری") { path = "calls/popup" }
         }
         "calls/sim" -> SubPage("سیم‌کارت‌ها", { path = "calls" }) {
             SectionCard("سیم‌کارت‌های شناسایی‌شده") {
@@ -514,7 +415,7 @@ fun SettingsScreen() {
                 }
             }
             BlockedListCard()
-            Text("رد خودکار گروه‌ها و شماره‌های مشخص را از بخش «مدیریت گروه‌ها» در تنظیمات و جزئیات هر مخاطب تنظیم کنید.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("رد خودکار گروه‌ها و شماره‌های مشخص را از تب «گروه‌ها» و جزئیات هر مخاطب تنظیم کنید.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         "calls/quiet" -> SubPage("حالت مزاحم نشو", { path = "calls" }) {
             SectionCard("رد خودکار در ساعات مشخص") {
@@ -545,7 +446,7 @@ fun SettingsScreen() {
                     Button({ Prefs.quickReplies = list + "پیام جدید"; Prefs.saveReplies() }) { Text("افزودن پیام") }
                     TextButton({ Prefs.quickReplies = Prefs.defaultReplies; Prefs.saveReplies() }) { Text("بازگشت به پیش‌فرض") }
                 }
-                Text("حداکثر ۱۶۰ نویسه. هنگام تماس ورودی، ابتدا فهرست پیام‌ها باز می‌شود؛ سپس پس از انتخاب پیام و تأیید نهایی، تماس رد و پیامک ارسال خواهد شد.",
+                Text("حداکثر ۱۶۰ نویسه. این پیام‌ها هنگام زنگ‌خوردن تماس، بالای دکمه‌های پاسخ و رد نمایش داده می‌شوند و با زدن روی هرکدام، تماس رد و پیامک ارسال می‌شود.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
@@ -567,51 +468,6 @@ fun SettingsScreen() {
                 Text("اگر گوشی باز و در حال استفاده باشد، ممکن است اندروید یا سازندهٔ گوشی به‌جای تمام‌صفحه یک اعلان بالای صفحه نشان دهد.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-        }
-        "calls/popup" -> SubPage("پنجره شناور و اجرای پس‌زمینه", { path = "calls" }) {
-            val pm = ctx.getSystemService(android.os.PowerManager::class.java)
-            val batteryOk = Build.VERSION.SDK_INT < 23 || pm.isIgnoringBatteryOptimizations(ctx.packageName)
-            val overlayOk = Build.VERSION.SDK_INT < 23 || android.provider.Settings.canDrawOverlays(ctx)
-            SectionCard("نمایش پنجره تماس") {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("نمایش کارت شناور هنگام استفاده از برنامه‌های دیگر")
-                        Text("یک کارت کوچک با نام تماس‌گیرنده و دکمه‌های پاسخ و رد روی برنامه فعلی نمایش داده می‌شود.", fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Switch(Prefs.on("callPopup"), { Prefs.setFlag("callPopup", it) })
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("مجوز نمایش روی سایر پنجره‌ها")
-                        Text(if (overlayOk) "مجوز سیستم فعال است" else "برای پنجره شناور، مجوز سیستم لازم است", fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Text(if (overlayOk) "فعال" else "غیرفعال", color = if (overlayOk) Color(0xFF2E9F5B) else MaterialTheme.colorScheme.error)
-                }
-                if (!overlayOk) Button(onClick = {
-                    try { ctx.startActivity(Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        Uri.parse("package:" + ctx.packageName))) } catch (_: Exception) { }
-                }) { Text("اعطای مجوز نمایش روی برنامه‌ها") }
-            }
-            SectionCard("محدودیت باتری") {
-                Text(if (batteryOk) "✅ برنامه از محدودیت بهینه‌سازی باتری مستثنا است."
-                    else "⚠️ برای دریافت مطمئن تماس در پس‌زمینه، محدودیت بهینه‌سازی باتری را بررسی کنید.")
-                if (!batteryOk && Build.VERSION.SDK_INT >= 23) Button(onClick = {
-                    try { ctx.startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                        Uri.parse("package:" + ctx.packageName))) } catch (_: Exception) {
-                        ctx.startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-                    }
-                }) { Text("درخواست عدم بهینه‌سازی باتری") }
-                OutlinedButton(onClick = {
-                    ctx.startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                        Uri.parse("package:" + ctx.packageName)))
-                }) { Text("تنظیمات باتری و اجرای خودکار برنامه") }
-                Text("در گوشی‌های شیائومی، هواوی، اوپو و برخی مدل‌های سامسونگ، علاوه بر این گزینه باید اجرای خودکار و فعالیت پس‌زمینه را نیز در تنظیمات سازنده فعال کنید.",
-                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Text("با فعال بودن این گزینه و اعطای مجوز نمایش روی برنامه‌ها، هنگام باز بودن قفل گوشی یک کارت شناور با دکمه‌های پاسخ و رد نمایش داده می‌شود. روی صفحه قفل از رابط استاندارد تماس و اعلان تمام‌صفحه اندروید استفاده می‌شود؛ رفتار نهایی به نسخه اندروید و سیاست سازنده گوشی وابسته است.",
-                fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         "notif" -> SubPage("اعلان‌ها", back) {
             SectionCard("تماس‌های بی‌پاسخ") {
@@ -672,41 +528,9 @@ fun SettingsScreen() {
         "data/rec" -> SubPage("مکالمات ضبط‌شده", { path = "data" }) { RecordingsContent() }
         else -> SubPage("دربارهٔ برنامه", back) {
             SectionCard("مدیریت تماس") {
-                Text("نسخه ۱٫۰", fontWeight = FontWeight.Bold)
-                Text("شماره‌گیر، تاریخچه، مخاطبین، یادآوری تماس، گروه‌بندی و مدیریت هوشمند تماس‌ها.", fontSize = 13.sp,
+                Text("نسخه ۰٫۶")
+                Text("شماره‌گیر، تاریخچه، مخاطبین، یادداشت هنگام تماس، گروه‌بندی و رد خودکار تماس.", fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Divider()
-                Text("برنامه‌نویس", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                Text("علیرضا روحانی", fontWeight = FontWeight.SemiBold)
-                TextButton(onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://alirezarouhani.ir"))) }) {
-                    Icon(Icons.Default.Language, null); Spacer(Modifier.width(6.dp)); Text("alirezarouhani.ir")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun ReminderListContent() {
-    val ctx = LocalContext.current
-    var tick by remember { mutableIntStateOf(0) }
-    val reminders = remember(tick) { Reminders.all(ctx).filter { it.atMillis > System.currentTimeMillis() } }
-    if (reminders.isEmpty()) {
-        SectionCard("فهرست یادآوری‌ها") { Text("یادآوری فعالی ثبت نشده است", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-    } else {
-        reminders.forEach { r ->
-            SectionCard(r.name.ifBlank { Jalali.fa(r.number) }) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.NotificationsActive, null, tint = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.width(8.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(Jalali.fa(r.number), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(Jalali.format(r.atMillis), fontWeight = FontWeight.Medium)
-                    }
-                    IconButton({ Reminders.delete(ctx, r.number, r.atMillis); tick++ }) {
-                        Icon(Icons.Default.DeleteOutline, "حذف یادآوری", tint = MaterialTheme.colorScheme.error)
-                    }
-                }
             }
         }
     }
