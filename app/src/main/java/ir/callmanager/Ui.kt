@@ -64,10 +64,31 @@ import kotlin.math.sin
 
 // ---------------- تم و شخصی‌سازی ----------------
 
+/** رنگ‌بندی تم‌های دستگاهی؛ بر پایهٔ طرح پایه اعمال می‌شود و انتخاب‌های دستی کاربر بعد از آن اولویت دارد. */
+fun applyDeviceTheme(base: ColorScheme): ColorScheme {
+    if (Prefs.uiTheme == 0) return base
+    val (bg, card, text, accent) = when (Prefs.uiTheme) {
+        1 -> listOf(0xFFF2F2F7, 0xFFFFFFFF, 0xFF1C1C1E, 0xFF0A84FF)   // iOS 17 light
+        2 -> listOf(0xFF000000, 0xFF1C1C1E, 0xFFFFFFFF, 0xFF0A84FF)   // iOS 17 dark
+        3 -> listOf(0xFFF7F8FA, 0xFFFFFFFF, 0xFF131F2C, 0xFF0381FE)   // Samsung S26 light
+        else -> listOf(0xFF13161B, 0xFF1F242B, 0xFFF5F7FA, 0xFF4592E8) // Samsung S26 dark
+    }.map { Color(it.toInt()) }
+    val onP = if (accent.luminance() > 0.5f) Color.Black else Color.White
+    return base.copy(
+        background = bg, surface = bg,
+        surfaceContainerLowest = bg, surfaceContainerLow = bg, surfaceContainer = bg,
+        surfaceContainerHigh = card, surfaceContainerHighest = card, surfaceVariant = card,
+        onBackground = text, onSurface = text, onSurfaceVariant = text.copy(alpha = 0.7f),
+        primary = accent, onPrimary = onP,
+        primaryContainer = lerp(accent, bg, 0.85f), onPrimaryContainer = accent,
+        secondaryContainer = lerp(accent, bg, 0.92f))
+}
+
 @Composable
 fun AppTheme(content: @Composable () -> Unit) {
     val ctx = LocalContext.current
     var cs = if (isSystemInDarkTheme()) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
+    cs = applyDeviceTheme(cs)
     if (Prefs.bg != 0) {
         val b = Color(Prefs.bg)
         cs = cs.copy(background = b, surface = b, surfaceContainerLowest = b, surfaceContainerLow = b, surfaceContainer = b)
@@ -203,11 +224,20 @@ fun CallPill(modifier: Modifier, title: String, sub: String?, enabled: Boolean =
 fun SimCallRow(number: String, modifier: Modifier = Modifier, enabled: Boolean = true) {
     val ctx = LocalContext.current
     val sims = Repo.sims
+    val preferredId = remember(number, sims, Repo.calls) {
+        if (number.isBlank()) null else try {
+            Db.get(ctx).simChoice(number) ?: Repo.calls.asSequence()
+                .filter { norm(it.number) == norm(number) && it.simId.isNotBlank() }
+                .maxByOrNull { it.date }?.simId ?: sims.firstOrNull { it.isDefault }?.handle?.id
+        } catch (_: Exception) { sims.firstOrNull { it.isDefault }?.handle?.id }
+    }
     val on = enabled && number.isNotBlank()
     Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         if (sims.size < 2) CallPill(Modifier.weight(1f), "تماس", null, on) { placeCall(ctx, number, sims.firstOrNull()?.handle) }
-        else sims.forEach { s ->
-            CallPill(Modifier.weight(1f), "SIM ${Jalali.fa(s.index)}" + if (s.isDefault) " ★" else "", s.label, on) {
+        else sims.sortedByDescending { it.handle.id == preferredId }.forEach { s ->
+            val preferred = s.handle.id == preferredId
+            CallPill(Modifier.weight(1f), "SIM ${Jalali.fa(s.index)}" + if (preferred) " ★" else "",
+                if (preferred) "پیشنهادی · ${s.label}" else s.label, on) {
                 placeCall(ctx, number, s.handle)
             }
         }
@@ -259,6 +289,15 @@ fun Keypad(modifier: Modifier = Modifier, keyHeight: Dp = 58.dp, style: Int = Pr
                             }
                             2 -> Box(Modifier.weight(1f).height(keyHeight).clip(CircleShape).then(click), contentAlignment = Alignment.Center) {
                                 Text(label, fontSize = 30.sp, fontWeight = FontWeight.Light)
+                            }
+                            3 -> Box(Modifier.weight(1f).padding(vertical = 4.dp), contentAlignment = Alignment.Center) {
+                                Box(Modifier.size(keyHeight + 8.dp).clip(CircleShape)
+                                    .background(cs.surface.copy(alpha = 0.6f))
+                                    .then(click),
+                                    contentAlignment = Alignment.Center) {
+                                    Text(label, fontSize = 26.sp, fontWeight = FontWeight.Medium,
+                                        color = cs.onSurface.copy(alpha = 0.9f))
+                                }
                             }
                             else -> Box(Modifier.weight(1f).padding(4.dp).height(keyHeight).clip(RoundedCornerShape(30.dp))
                                 .background(cs.surfaceContainerHigh).then(click), contentAlignment = Alignment.Center) {
@@ -326,6 +365,47 @@ fun SwipeUpDown(onAnswer: () -> Unit, onReject: () -> Unit) {
     }
 }
 
+/** اسلاید دوطرفه مشابه iOS کلاسیک: دایرهٔ سبز را برای پاسخ به راست و دایرهٔ قرمز را برای رد به چپ بکشید */
+@Composable
+fun SlideBothRow(onAnswer: () -> Unit, onReject: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val density = LocalDensity.current
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+        BoxWithConstraints(Modifier.fillMaxWidth().height(68.dp).clip(RoundedCornerShape(34.dp)).background(cs.surfaceContainerHigh)) {
+            val travel = with(density) { ((maxWidth - 68.dp) / 2).toPx() }
+            var dxL by remember { mutableFloatStateOf(0f) }
+            var dxR by remember { mutableFloatStateOf(0f) }
+            var dragL by remember { mutableStateOf(false) }
+            var dragR by remember { mutableStateOf(false) }
+            val progL = (dxL / travel).coerceIn(0f, 1f)
+            val progR = (dxR / travel).coerceIn(0f, 1f)
+            Text("◀ رد کنید        پاسخ بدهید ▶", Modifier.align(Alignment.Center)
+                .graphicsLayer { alpha = 1f - 0.75f * maxOf(progL, progR) },
+                fontSize = 14.sp, color = cs.onSurfaceVariant)
+            val shownL by animateFloatAsState(dxL, if (dragL) snap<Float>() else spring<Float>(), label = "sl")
+            val shownR by animateFloatAsState(dxR, if (dragR) snap<Float>() else spring<Float>(), label = "sr")
+            Box(Modifier.align(Alignment.CenterStart).padding(4.dp).offset { IntOffset(-shownL.toInt(), 0) }.size(60.dp).clip(CircleShape)
+                .background(Brush.verticalGradient(listOf(Color(0xFFFF8A80), Color(0xFFC62828))))
+                .pointerInput(travel, onReject) {
+                    detectHorizontalDragGestures(
+                        onDragStart = { dragL = true },
+                        onDragEnd = { dragL = false; if (dxL >= travel * 0.85f) onReject(); dxL = 0f },
+                        onDragCancel = { dragL = false; dxL = 0f }
+                    ) { _, amount -> dxL = (dxL - amount).coerceIn(0f, travel) }
+                }, contentAlignment = Alignment.Center) { Handset(Color.White, 26.dp, 135f) }
+            Box(Modifier.align(Alignment.CenterEnd).padding(4.dp).offset { IntOffset(shownR.toInt(), 0) }.size(60.dp).clip(CircleShape)
+                .background(Brush.verticalGradient(listOf(Color(0xFF52E58A), Color(0xFF1B9E4B))))
+                .pointerInput(travel, onAnswer) {
+                    detectHorizontalDragGestures(
+                        onDragStart = { dragR = true },
+                        onDragEnd = { dragR = false; if (dxR >= travel * 0.85f) onAnswer(); dxR = 0f },
+                        onDragCancel = { dragR = false; dxR = 0f }
+                    ) { _, amount -> dxR = (dxR + amount).coerceIn(0f, travel) }
+                }, contentAlignment = Alignment.Center) { Handset(Color.White, 26.dp) }
+        }
+    }
+}
+
 @Composable
 fun CapsuleButtons(onAnswer: () -> Unit, onReject: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -340,10 +420,11 @@ fun CapsuleButtons(onAnswer: () -> Unit, onReject: () -> Unit) {
     }
 }
 
-/** کنترل‌های پاسخ به تماس ورودی؛ style: 0 دکمه‌های گرد، 1 کشویی (iOS)، 2 کپسولی، 3 کشیدن بالا/پایین */
+/** کنترل‌های پاسخ به تماس ورودی؛ style: 0 دکمه‌های گرد، 1 کشویی (iOS)، 2 کپسولی، 3 کشیدن بالا/پایین، 4 اسلاید دوطرفه (iOS کلاسیک) */
 @Composable
 fun AnswerControls(style: Int, onAnswer: () -> Unit, onReject: () -> Unit) {
     when (style) {
+        4 -> SlideBothRow(onAnswer, onReject)
         1 -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
             SlideToAnswer("برای پاسخ بکشید  ›››", onAnswer)
             Spacer(Modifier.height(14.dp))
@@ -371,12 +452,22 @@ fun Empty(t: String) {
 @Composable
 fun AppHeader(title: String) {
     val cs = MaterialTheme.colorScheme
-    Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(bottomStart = 28.dp, bottomEnd = 28.dp))
-        .background(Brush.horizontalGradient(listOf(lerp(cs.surface, cs.primary, 0.28f), lerp(cs.surface, cs.primary, 0.06f))))
-        .statusBarsPadding().padding(horizontal = 22.dp, vertical = 16.dp)) {
-        Column {
-            Text(title, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-            Text(Jalali.dateOnly(System.currentTimeMillis()), fontSize = 12.sp, color = cs.onSurfaceVariant)
+    Box(Modifier.fillMaxWidth()
+        .shadow(12.dp, RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp), spotColor = cs.primary)
+        .clip(RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
+        .background(Brush.linearGradient(listOf(lerp(cs.surface, cs.primary, 0.34f), lerp(cs.surface, cs.primary, 0.08f))))
+        .statusBarsPadding().padding(horizontal = 20.dp, vertical = 18.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(46.dp).clip(CircleShape)
+                .background(Brush.linearGradient(listOf(cs.primary, lerp(cs.primary, cs.surface, 0.4f)))),
+                contentAlignment = Alignment.Center) {
+                Handset(if (cs.primary.luminance() > 0.5f) Color.Black else Color.White, 22.dp)
+            }
+            Spacer(Modifier.width(14.dp))
+            Column {
+                Text(title, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                Text(Jalali.dateOnly(System.currentTimeMillis()), fontSize = 12.sp, color = cs.onSurfaceVariant)
+            }
         }
     }
 }

@@ -9,6 +9,8 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontWeight
 
 object Prefs {
     private var sp: SharedPreferences? = null
@@ -35,6 +37,10 @@ object Prefs {
     var quickReplies by mutableStateOf(defaultReplies)
 
     var callDark by mutableStateOf(false)
+    // تم دستگاه: 0 پیش‌فرض، 1 آیفون ۱۷ روشن، 2 آیفون ۱۷ تیره، 3 سامسونگ S26 روشن، 4 سامسونگ S26 تیره
+    var uiTheme by mutableIntStateOf(0)
+    val uiThemeNames = listOf("پیش‌فرض (هماهنگ با سیستم)", "🍎 آیفون ۱۷ — روشن", "🍎 آیفون ۱۷ — تیره", "📱 سامسونگ S26 — روشن", "📱 سامسونگ S26 — تیره")
+    fun uiThemeDark() = uiTheme == 2 || uiTheme == 4
     var callTheme by mutableIntStateOf(0)      // 0 گرادیان، 1 ساده، 2 تیره AMOLED
     var answerStyle by mutableIntStateOf(0)    // 0 دکمه‌های گرد، 1 کشویی iOS، 2 کپسولی، 3 کشیدن بالا/پایین
     var dialerStyle by mutableIntStateOf(0)    // 0 کلاسیک، 1 دایره‌ای، 2 مینیمال
@@ -55,7 +61,9 @@ object Prefs {
         "allowGroups" to "حالت «فقط گروه مجاز»",
         "blockedNumbers" to "رد خودکار شماره‌های مسدود",
         "favorites" to "علاقه‌مندی‌ها در شماره‌گیر",
-        "dialerSuggest" to "پیشنهاد مخاطب هنگام شماره‌گیری"
+        "dialerSuggest" to "پیشنهاد مخاطب هنگام شماره‌گیری",
+        "callPopup" to "نمایش پنجره تماس هنگام استفاده از برنامه‌های دیگر",
+        "swipeGestures" to "کشیدن‌ها (سوایپ) در فهرست‌ها"
     )
     var quietOn by mutableStateOf(false)
     var quietStart by mutableIntStateOf(22)
@@ -74,7 +82,7 @@ object Prefs {
         persian = s.getBoolean("persian", true); rejectUnknown = s.getBoolean("rejectUnknown", false)
         hTap = s.getInt("hTap", 1); hLong = s.getInt("hLong", 5); hSwL = s.getInt("hSwL", 2); hSwR = s.getInt("hSwR", 3)
         cTap = s.getInt("cTap", 1); cLong = s.getInt("cLong", 0); cSwL = s.getInt("cSwL", 2); cSwR = s.getInt("cSwR", 3)
-        callDark = s.getBoolean("callDark", false)
+        callDark = s.getBoolean("callDark", false); uiTheme = s.getInt("uiTheme", 0)
         callTheme = s.getInt("callTheme", 0); answerStyle = s.getInt("answerStyle", 0); dialerStyle = s.getInt("dialerStyle", 0)
         featureList.forEach { flags[it.first] = s.getBoolean("flag_" + it.first, true) }
         quietOn = s.getBoolean("quietOn", false); quietStart = s.getInt("quietStart", 22); quietEnd = s.getInt("quietEnd", 7)
@@ -89,12 +97,12 @@ object Prefs {
             ?.putBoolean("persian", persian)?.putBoolean("rejectUnknown", rejectUnknown)
             ?.putInt("hTap", hTap)?.putInt("hLong", hLong)?.putInt("hSwL", hSwL)?.putInt("hSwR", hSwR)
             ?.putInt("cTap", cTap)?.putInt("cLong", cLong)?.putInt("cSwL", cSwL)?.putInt("cSwR", cSwR)
-            ?.putBoolean("callDark", callDark)?.putInt("callTheme", callTheme)?.putInt("answerStyle", answerStyle)?.putInt("dialerStyle", dialerStyle)?.putBoolean("quietOn", quietOn)?.putInt("quietStart", quietStart)?.putInt("quietEnd", quietEnd)?.putBoolean("missedNotify", missedNotify)?.putBoolean("missedBadge", missedBadge)?.apply()
+            ?.putBoolean("callDark", callDark)?.putInt("uiTheme", uiTheme)?.putInt("callTheme", callTheme)?.putInt("answerStyle", answerStyle)?.putInt("dialerStyle", dialerStyle)?.putBoolean("quietOn", quietOn)?.putInt("quietStart", quietStart)?.putInt("quietEnd", quietEnd)?.putBoolean("missedNotify", missedNotify)?.putBoolean("missedBadge", missedBadge)?.apply()
     }
 
     fun saveReplies() { sp?.edit()?.putString("replies", quickReplies.joinToString("\u001F"))?.apply() }
 
-    fun reset() { bg = 0; card = 0; text = 0; accent = 0; fontScale = 1f; font = 0; save() }
+    fun reset() { bg = 0; card = 0; text = 0; accent = 0; fontScale = 1f; font = 0; uiTheme = 0; save() }
 
     fun addMissed(label: String, number: String) {
         missedCount++; missedLast = number
@@ -108,12 +116,14 @@ object Prefs {
         sp?.edit()?.putInt("missedCount", missedCount)?.putString("missedLabels", missedLabels)?.putString("missedLast", missedLast)?.apply()
     }
 
-    val fontNames = listOf("پیش‌فرض سیستم", "Sans Serif", "Serif", "Monospace", "Cursive")
+    // فونت‌های فارسی/عربیِ همراه برنامه؛ نام‌ها بر اساس خانواده واقعی فونت هستند.
+    // این‌ها جایگزین‌های متن‌باز نزدیک به سبک‌های رایج‌اند، نه فایل‌های تجاری Nazanin/Vazir/Yekan.
+    val fontNames = listOf("پیش‌فرض سیستم", "وزیری‌مانند · Noto Sans Arabic", "یکان‌مانند · Noto Kufi Arabic", "نازنین‌مانند · Noto Naskh Arabic", "امیری · Amiri")
     fun family(): FontFamily = when (font) {
-        1 -> FontFamily.SansSerif
-        2 -> FontFamily.Serif
-        3 -> FontFamily.Monospace
-        4 -> FontFamily.Cursive
+        1 -> FontFamily(Font(R.font.noto_sans_arabic_regular, FontWeight.Normal), Font(R.font.noto_sans_arabic_bold, FontWeight.Bold))
+        2 -> FontFamily(Font(R.font.noto_kufi_arabic_regular, FontWeight.Normal), Font(R.font.noto_kufi_arabic_bold, FontWeight.Bold))
+        3 -> FontFamily(Font(R.font.noto_naskh_arabic_regular, FontWeight.Normal), Font(R.font.noto_naskh_arabic_bold, FontWeight.Bold))
+        4 -> FontFamily(Font(R.font.amiri_regular, FontWeight.Normal), Font(R.font.amiri_bold, FontWeight.Bold))
         else -> FontFamily.Default
     }
 
