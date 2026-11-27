@@ -79,6 +79,7 @@ import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
+import androidx.compose.foundation.isSystemInDarkTheme
 
 // ======================= قالب ظاهری (iPhone 17 / Galaxy S26 / مدرن) =======================
 
