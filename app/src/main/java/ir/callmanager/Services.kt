@@ -18,6 +18,8 @@ import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.VibratorManager
 import android.os.PowerManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
@@ -306,14 +308,16 @@ class AppCallScreeningService : CallScreeningService() {
         val number = details.handle?.schemeSpecificPart ?: ""
         val db = Db.get(this)
         val hasNumber = number.isNotBlank()
-        val allowMode = Prefs.on("allowGroups") && db.allowOnlyActive()
-        val allowedByGroup = hasNumber && db.inAllowGroup(number)
+        // حالت فیلتر گروه‌ها: 0 خاموش، 1 رد گروه‌های انتخابی، 2 فقط گروه‌های انتخابی مجازند
+        // (اگر در حالت 2 هیچ گروهی انتخاب نشده باشد، برای جلوگیری از رد همهٔ تماس‌ها فیلتر اعمال نمی‌شود)
+        val allowMode = Prefs.groupMode == 2 && db.allowOnlyActive()
+        val allowedByGroup = hasNumber && (db.inAllowGroup(number) || (Prefs.on("allowFavs") && db.isFav(number)))
         val blocked = hasNumber && Prefs.on("blockedNumbers") && db.isBlocked(number)
         val reject = incoming && (
             blocked ||
             if (allowMode) !allowedByGroup
             else (hasNumber && (
-                (Prefs.on("rejectGroups") && db.inRejectGroup(number)) ||
+                (Prefs.groupMode == 1 && db.inRejectGroup(number)) ||
                 (Prefs.rejectUnknown && lookupName(this, number) == null) ||
                 (quietNow() && !db.isFav(number))
             ))
@@ -345,10 +349,19 @@ class AppInCallService : InCallService() {
                 orientation = LinearLayout.VERTICAL
                 layoutDirection = View.LAYOUT_DIRECTION_RTL
                 setPadding(dp(18), dp(16), dp(18), dp(16))
-                background = GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                    intArrayOf(android.graphics.Color.rgb(31, 48, 70), android.graphics.Color.rgb(22, 32, 48))).apply {
-                    cornerRadius = dp(24).toFloat()
-                    setStroke(dp(1), android.graphics.Color.argb(70, 255, 255, 255))
+                background = when (Prefs.uiStyle) {
+                    1 -> GradientDrawable().apply {          // iPhone: شیشهٔ تیره
+                        setColor(android.graphics.Color.argb(240, 28, 28, 30)); cornerRadius = dp(26).toFloat()
+                        setStroke(dp(1), android.graphics.Color.argb(40, 255, 255, 255))
+                    }
+                    2 -> GradientDrawable().apply {          // Galaxy: کارت گرد و بزرگ
+                        setColor(android.graphics.Color.rgb(32, 32, 34)); cornerRadius = dp(30).toFloat()
+                    }
+                    else -> GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                        intArrayOf(android.graphics.Color.rgb(31, 48, 70), android.graphics.Color.rgb(22, 32, 48))).apply {
+                        cornerRadius = dp(24).toFloat()
+                        setStroke(dp(1), android.graphics.Color.argb(70, 255, 255, 255))
+                    }
                 }
                 elevation = dp(16).toFloat()
             }
@@ -385,7 +398,7 @@ class AppInCallService : InCallService() {
                 textSize = 14f
                 typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
                 setTextColor(android.graphics.Color.WHITE)
-                background = GradientDrawable().apply { setColor(color); cornerRadius = dp(16).toFloat() }
+                background = GradientDrawable().apply { setColor(color); cornerRadius = dp(if (Prefs.uiStyle == 1) 24 else 16).toFloat() }
                 setPadding(dp(8), dp(13), dp(8), dp(13))
                 isClickable = true
                 isFocusable = true
@@ -419,8 +432,21 @@ class AppInCallService : InCallService() {
         try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(view) } catch (_: Exception) { }
     }
 
+    /** تماس‌هایی که واقعاً وصل شده‌اند (برای ویبرهٔ وصل/قطع؛ برگشت از حالت انتظار دوباره ویبره نمی‌زند) */
+    private val connectedCalls = HashSet<Call>()
+
+    private fun buzz(pattern: LongArray) {
+        try {
+            val v = getSystemService(VibratorManager::class.java)?.defaultVibrator ?: return
+            if (v.hasVibrator()) v.vibrate(VibrationEffect.createWaveform(pattern, -1))
+        } catch (_: Exception) { }
+    }
+
     private val cb = object : Call.Callback() {
-        override fun onStateChanged(call: Call, state: Int) { update(null) }
+        override fun onStateChanged(call: Call, state: Int) {
+            if (state == Call.STATE_ACTIVE && connectedCalls.add(call) && Prefs.on("vibConnect")) buzz(longArrayOf(0, 110))
+            update(null)
+        }
     }
 
     private fun update(removed: Call?) {
@@ -437,6 +463,7 @@ class AppInCallService : InCallService() {
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
         removeIncomingPopup()
+        connectedCalls.clear()
         CallHolder.service = null
         // جلوگیری از باقی‌ماندن وضعیت تماس قبلی پس از قطع سرویس
         CallHolder.call = null
@@ -483,6 +510,7 @@ class AppInCallService : InCallService() {
     @Suppress("DEPRECATION")
     override fun onCallAdded(call: Call) {
         call.registerCallback(cb)
+        if (call.state == Call.STATE_ACTIVE) connectedCalls.add(call)
         val isWaiting = call.state == Call.STATE_RINGING && calls.any { it !== call }
         CallHolder.recompute(calls)
         try { callAudioState?.let { applyAudio(it) } } catch (e: Exception) { }
@@ -553,6 +581,7 @@ class AppInCallService : InCallService() {
     override fun onCallRemoved(call: Call) {
         removeIncomingPopup()
         call.unregisterCallback(cb)
+        if (connectedCalls.remove(call) && Prefs.on("vibEnd")) buzz(longArrayOf(0, 80, 90, 80))
         Recorder.stop()
         if (call.details.disconnectCause?.code == DisconnectCause.MISSED) {
             val num = call.details.handle?.schemeSpecificPart ?: ""

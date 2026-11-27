@@ -37,33 +37,70 @@ object Prefs {
     var quickReplies by mutableStateOf(defaultReplies)
 
     var callDark by mutableStateOf(false)
-    // تم دستگاه: 0 پیش‌فرض، 1 آیفون ۱۷ روشن، 2 آیفون ۱۷ تیره، 3 سامسونگ S26 روشن، 4 سامسونگ S26 تیره
-    var uiTheme by mutableIntStateOf(0)
-    val uiThemeNames = listOf("پیش‌فرض (هماهنگ با سیستم)", "🍎 آیفون ۱۷ — روشن", "🍎 آیفون ۱۷ — تیره", "📱 سامسونگ S26 — روشن", "📱 سامسونگ S26 — تیره")
-    fun uiThemeDark() = uiTheme == 2 || uiTheme == 4
-    var callTheme by mutableIntStateOf(0)      // 0 گرادیان، 1 ساده، 2 تیره AMOLED
-    var answerStyle by mutableIntStateOf(0)    // 0 دکمه‌های گرد، 1 کشویی iOS، 2 کپسولی، 3 کشیدن بالا/پایین
-    var dialerStyle by mutableIntStateOf(0)    // 0 کلاسیک، 1 دایره‌ای، 2 مینیمال
+    var callTheme by mutableIntStateOf(0)      // 0 رنگی/گرادیان، 1 ساده، 2 تیره AMOLED
+    // 0 دکمه‌های گرد، 1 کشویی iOS، 2 کپسولی، 3 کشیدن بالا/پایین، 4 کشیدن دایره‌ها (Galaxy)، 5 کشویی دوطرفه
+    var answerStyle by mutableIntStateOf(0)
+    // 0 کلاسیک، 1 دایره‌ای، 2 مینیمال، 3 iPhone، 4 Galaxy
+    var dialerStyle by mutableIntStateOf(0)
+
+    // ---- قالب‌های ظاهری ----
+    var uiStyle by mutableIntStateOf(0)        // 0 مدرن، 1 iPhone 17، 2 Galaxy S26
+    var navStyle by mutableIntStateOf(-1)      // -1 خودکار (مطابق قالب)، 0 شناور مدرن، 1 شیشه‌ای iPhone، 2 چسبیده Galaxy، 3 کلاسیک
+    var headerStyle by mutableIntStateOf(-1)   // -1 خودکار، 0 گرادیان مدرن، 1 عنوان بزرگ iPhone، 2 Galaxy، 3 فشرده
+    var callLayout by mutableIntStateOf(0)     // 0 مدرن، 1 iPhone، 2 Galaxy
+    var darkMode by mutableIntStateOf(0)       // 0 سیستم، 1 روشن، 2 تیره
+    // فیلتر گروه‌ها: 0 خاموش، 1 رد گروه‌های انتخابی، 2 فقط گروه‌های انتخابی مجازند
+    var groupMode by mutableIntStateOf(0)
+
+    fun nav(): Int = if (navStyle >= 0) navStyle else uiStyle
+    fun header(): Int = if (headerStyle >= 0) headerStyle else uiStyle
 
     val flags = mutableStateMapOf<String, Boolean>()
-    fun on(k: String): Boolean = flags[k] ?: true
+    private val defaults = HashMap<String, Boolean>()
+    fun on(k: String): Boolean = flags[k] ?: defaults[k] ?: true
     fun setFlag(k: String, v: Boolean) { flags[k] = v; sp?.edit()?.putBoolean("flag_$k", v)?.apply() }
-    val featureList = listOf(
-        "notes" to "نمایش یادداشت در صفحه تماس",
-        "referrer" to "نمایش معرف در صفحه تماس",
-        "groupsShow" to "نمایش گروه‌ها در صفحه تماس",
-        "lastCall" to "نمایش آخرین تماس قبلی",
-        "proximity" to "خاموش‌شدن صفحه با سنسور مجاورت",
-        "beeps" to "بوق تماس دوم (پشت خط)",
-        "quickReplies" to "پیامک‌های آماده هنگام زنگ‌خوردن",
-        "record" to "دکمهٔ ضبط مکالمه",
-        "rejectGroups" to "رد خودکار گروه‌ها",
-        "allowGroups" to "حالت «فقط گروه مجاز»",
-        "blockedNumbers" to "رد خودکار شماره‌های مسدود",
-        "favorites" to "علاقه‌مندی‌ها در شماره‌گیر",
-        "dialerSuggest" to "پیشنهاد مخاطب هنگام شماره‌گیری",
-        "callPopup" to "نمایش پنجره تماس هنگام استفاده از برنامه‌های دیگر",
-        "swipeGestures" to "کشیدن‌ها (سوایپ) در فهرست‌ها"
+
+    class Feature(val key: String, val label: String, val section: String, val def: Boolean = true)
+
+    /** همهٔ بخش‌هایی که از تنظیمات › ویژگی‌ها قابل روشن/خاموش‌اند */
+    val features = listOf(
+        Feature("notes", "نمایش یادداشت در صفحه تماس", "صفحه تماس"),
+        Feature("referrer", "نمایش معرف در صفحه تماس", "صفحه تماس"),
+        Feature("groupsShow", "نمایش گروه‌ها در صفحه تماس", "صفحه تماس"),
+        Feature("lastCall", "نمایش آخرین تماس قبلی", "صفحه تماس"),
+        Feature("callSim", "نمایش نام سیم‌کارت در صفحه تماس", "صفحه تماس"),
+        Feature("ctrlMute", "دکمهٔ بی‌صدا", "صفحه تماس"),
+        Feature("ctrlKeypad", "دکمهٔ صفحه‌کلید در مکالمه", "صفحه تماس"),
+        Feature("ctrlRoute", "دکمهٔ خروجی صدا", "صفحه تماس"),
+        Feature("ctrlHold", "دکمهٔ انتظار (Hold)", "صفحه تماس"),
+        Feature("ctrlNote", "دکمهٔ یادداشت در مکالمه", "صفحه تماس"),
+        Feature("record", "دکمهٔ ضبط مکالمه", "صفحه تماس"),
+        Feature("quickReplies", "پیامک‌های آماده هنگام زنگ‌خوردن", "صفحه تماس"),
+        Feature("vibConnect", "ویبره هنگام وصل‌شدن مکالمه", "صفحه تماس"),
+        Feature("vibEnd", "ویبره هنگام قطع‌شدن مکالمه", "صفحه تماس"),
+        Feature("proximity", "خاموش‌شدن صفحه با سنسور مجاورت", "صفحه تماس"),
+        Feature("beeps", "بوق تماس دوم (پشت خط)", "صفحه تماس"),
+        Feature("callPopup", "نمایش پنجره تماس هنگام استفاده از برنامه‌های دیگر", "صفحه تماس"),
+
+        Feature("favorites", "علاقه‌مندی‌ها در شماره‌گیر", "شماره‌گیر"),
+        Feature("dialerSuggest", "پیشنهاد مخاطب هنگام شماره‌گیری", "شماره‌گیر"),
+        Feature("dialLetters", "نمایش حروف زیر ارقام (ABC)", "شماره‌گیر"),
+        Feature("haptics", "لرزش ملایم با لمس کلیدها", "شماره‌گیر"),
+        Feature("keypadSound", "صدای لمس کلیدهای شماره‌گیر", "شماره‌گیر"),
+        Feature("dialerPaste", "دکمهٔ جای‌گذاری (Paste) شماره", "شماره‌گیر"),
+        Feature("dialerSave", "دکمهٔ ذخیرهٔ شماره در مخاطبین", "شماره‌گیر"),
+        Feature("dialerKeyboard", "باز شدن کیبورد گوشی با لمس کادر شماره", "شماره‌گیر", false),
+
+        Feature("showSimInfo", "نمایش سیم‌کارت در تاریخچه", "تاریخچه و مخاطبین"),
+        Feature("showDuration", "نمایش مدت مکالمه در تاریخچه", "تاریخچه و مخاطبین"),
+        Feature("remindBell", "نشان زنگوله برای شماره‌های دارای یادآوری", "تاریخچه و مخاطبین"),
+        Feature("letterHeaders", "سرفصل حرف اول در فهرست مخاطبین", "تاریخچه و مخاطبین"),
+
+        Feature("blockedNumbers", "رد خودکار شماره‌های مسدود", "رد و مجاز کردن تماس‌ها"),
+        Feature("allowFavs", "در حالت «فقط گروه‌های انتخابی»، علاقه‌مندی‌ها هم مجاز باشند", "رد و مجاز کردن تماس‌ها", false),
+
+        Feature("headerDate", "نمایش تاریخ زیر عنوان صفحه‌ها", "ظاهر"),
+        Feature("dynamicColor", "رنگ‌های پویای سیستم (Material You) در قالب مدرن", "ظاهر")
     )
     var quietOn by mutableStateOf(false)
     var quietStart by mutableIntStateOf(22)
@@ -82,9 +119,22 @@ object Prefs {
         persian = s.getBoolean("persian", true); rejectUnknown = s.getBoolean("rejectUnknown", false)
         hTap = s.getInt("hTap", 1); hLong = s.getInt("hLong", 5); hSwL = s.getInt("hSwL", 2); hSwR = s.getInt("hSwR", 3)
         cTap = s.getInt("cTap", 1); cLong = s.getInt("cLong", 0); cSwL = s.getInt("cSwL", 2); cSwR = s.getInt("cSwR", 3)
-        callDark = s.getBoolean("callDark", false); uiTheme = s.getInt("uiTheme", 0)
+        callDark = s.getBoolean("callDark", false)
         callTheme = s.getInt("callTheme", 0); answerStyle = s.getInt("answerStyle", 0); dialerStyle = s.getInt("dialerStyle", 0)
-        featureList.forEach { flags[it.first] = s.getBoolean("flag_" + it.first, true) }
+        uiStyle = s.getInt("uiStyle", 0); navStyle = s.getInt("navStyle", -1); headerStyle = s.getInt("headerStyle", -1)
+        callLayout = s.getInt("callLayout", 0); darkMode = s.getInt("darkMode", 0)
+        features.forEach { defaults[it.key] = it.def; flags[it.key] = s.getBoolean("flag_" + it.key, it.def) }
+        groupMode = s.getInt("groupMode", -1)
+        if (groupMode < 0) {
+            // مهاجرت از نسخهٔ قبل: رد گروه‌ها / فقط گروه مجاز
+            groupMode = try {
+                val gs = Db.get(c).groups()
+                val allowOld = s.getBoolean("flag_allowGroups", true) && gs.any { it.allowOnly }
+                val rejectOld = s.getBoolean("flag_rejectGroups", true) && gs.any { it.autoReject }
+                if (allowOld) 2 else if (rejectOld) 1 else 0
+            } catch (e: Exception) { 0 }
+            s.edit().putInt("groupMode", groupMode).apply()
+        }
         quietOn = s.getBoolean("quietOn", false); quietStart = s.getInt("quietStart", 22); quietEnd = s.getInt("quietEnd", 7)
         missedNotify = s.getBoolean("missedNotify", true); missedBadge = s.getBoolean("missedBadge", true)
         s.getString("replies", null)?.let { quickReplies = if (it.isEmpty()) emptyList() else it.split("\u001F") }
@@ -97,12 +147,26 @@ object Prefs {
             ?.putBoolean("persian", persian)?.putBoolean("rejectUnknown", rejectUnknown)
             ?.putInt("hTap", hTap)?.putInt("hLong", hLong)?.putInt("hSwL", hSwL)?.putInt("hSwR", hSwR)
             ?.putInt("cTap", cTap)?.putInt("cLong", cLong)?.putInt("cSwL", cSwL)?.putInt("cSwR", cSwR)
-            ?.putBoolean("callDark", callDark)?.putInt("uiTheme", uiTheme)?.putInt("callTheme", callTheme)?.putInt("answerStyle", answerStyle)?.putInt("dialerStyle", dialerStyle)?.putBoolean("quietOn", quietOn)?.putInt("quietStart", quietStart)?.putInt("quietEnd", quietEnd)?.putBoolean("missedNotify", missedNotify)?.putBoolean("missedBadge", missedBadge)?.apply()
+            ?.putBoolean("callDark", callDark)?.putInt("callTheme", callTheme)?.putInt("answerStyle", answerStyle)?.putInt("dialerStyle", dialerStyle)?.putBoolean("quietOn", quietOn)?.putInt("quietStart", quietStart)?.putInt("quietEnd", quietEnd)?.putBoolean("missedNotify", missedNotify)?.putBoolean("missedBadge", missedBadge)
+            ?.putInt("uiStyle", uiStyle)?.putInt("navStyle", navStyle)?.putInt("headerStyle", headerStyle)
+            ?.putInt("callLayout", callLayout)?.putInt("darkMode", darkMode)?.putInt("groupMode", groupMode)?.apply()
+    }
+
+    /** قالب‌های آمادهٔ کل برنامه: 0 مدرن، 1 iPhone 17، 2 Galaxy S26 */
+    fun applyPreset(p: Int) {
+        bg = 0; card = 0; text = 0; accent = 0
+        navStyle = -1; headerStyle = -1; callTheme = 0
+        when (p) {
+            1 -> { uiStyle = 1; callLayout = 1; dialerStyle = 3; answerStyle = 1 }
+            2 -> { uiStyle = 2; callLayout = 2; dialerStyle = 4; answerStyle = 4 }
+            else -> { uiStyle = 0; callLayout = 0; dialerStyle = 0; answerStyle = 0 }
+        }
+        save()
     }
 
     fun saveReplies() { sp?.edit()?.putString("replies", quickReplies.joinToString("\u001F"))?.apply() }
 
-    fun reset() { bg = 0; card = 0; text = 0; accent = 0; fontScale = 1f; font = 0; uiTheme = 0; save() }
+    fun reset() { bg = 0; card = 0; text = 0; accent = 0; fontScale = 1f; font = 0; darkMode = 0; save() }
 
     fun addMissed(label: String, number: String) {
         missedCount++; missedLast = number

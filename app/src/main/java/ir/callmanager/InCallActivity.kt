@@ -13,6 +13,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -21,24 +22,17 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Message
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -53,6 +47,7 @@ import kotlinx.coroutines.withContext
 class InCallActivity : ComponentActivity() {
     override fun onCreate(s: Bundle?) {
         super.onCreate(s)
+        enableEdgeToEdge()
         if (Build.VERSION.SDK_INT >= 27) { setShowWhenLocked(true); setTurnScreenOn(true) }
         @Suppress("DEPRECATION")
         window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
@@ -60,7 +55,6 @@ class InCallActivity : ComponentActivity() {
         handle(intent)
         setContent {
             AppTheme {
-                val ctx = LocalContext.current
                 val call = CallHolder.call
                 val liveState = CallHolder.state
                 LaunchedEffect(call, liveState) {
@@ -69,16 +63,7 @@ class InCallActivity : ComponentActivity() {
                         if (CallHolder.call == null || CallHolder.state == Call.STATE_DISCONNECTING || CallHolder.state == Call.STATE_DISCONNECTED) finish()
                     }
                 }
-                if (call != null) {
-                    if (Prefs.callDark || Prefs.callTheme == 2 || Prefs.uiThemeDark()) {
-                        var dcs = applyDeviceTheme(dynamicDarkColorScheme(ctx))
-                        if (Prefs.accent != 0) dcs = dcs.copy(primary = Color(Prefs.accent))
-                        if (Prefs.callTheme == 2) dcs = dcs.copy(background = Color.Black, surface = Color.Black)
-                        MaterialTheme(colorScheme = dcs, typography = MaterialTheme.typography) {
-                            Surface(Modifier.fillMaxSize(), color = dcs.background) { InCallScreen(call) }
-                        }
-                    } else InCallScreen(call)
-                }
+                if (call != null) InCallScreen(call)
             }
         }
     }
@@ -89,20 +74,6 @@ class InCallActivity : ComponentActivity() {
         if (i?.getStringExtra("act") == "answer") {
             CallHolder.call?.let { if (it.state == Call.STATE_RINGING) it.answer(0) }
         }
-    }
-}
-
-@Composable
-fun ActionBtn(emoji: String, label: String, active: Boolean, onClick: () -> Unit) {
-    val cs = MaterialTheme.colorScheme
-    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(84.dp)) {
-        Box(Modifier.size(62.dp).shadow(if (active) 8.dp else 2.dp, CircleShape)
-            .clip(CircleShape).background(if (active) cs.primary else cs.surfaceContainerHigh)
-            .clickable(onClick = onClick), contentAlignment = Alignment.Center) {
-            Text(emoji, fontSize = 23.sp)
-        }
-        Spacer(Modifier.height(6.dp))
-        Text(label, fontSize = 11.sp, maxLines = 1, color = cs.onSurface, fontWeight = FontWeight.Medium)
     }
 }
 
@@ -167,7 +138,6 @@ fun HeldCard(h: Call, primary: Call?) {
 fun InCallScreen(call: Call) {
     val ctx = LocalContext.current
     val db = remember { Db.get(ctx) }
-    val cs = MaterialTheme.colorScheme
     val scope = rememberCoroutineScope()
     val number = call.details.handle?.schemeSpecificPart ?: ""
     val name = remember(number) { lookupName(ctx, number) }
@@ -242,187 +212,91 @@ fun InCallScreen(call: Call) {
         Call.STATE_DISCONNECTING, Call.STATE_DISCONNECTED -> "پایان تماس"
         else -> ""
     }
-    val routeBtn: @Composable () -> Unit = {
-        ActionBtn(routeOpts.firstOrNull { it.first == CallHolder.route }?.third ?: "🔊", "خروجی صدا",
-            CallHolder.route != CallAudioState.ROUTE_EARPIECE) {
+    val lastText: String? = if (!lastLoaded) null else {
+        val r = last
+        if (r == null) "اولین تماس با این شماره"
+        else Jalali.dateOnly(r.date) + "  •  " + typeName(r.type) + (if (r.duration > 0) "  •  " + fmtDur(r.duration) else "")
+    }
+    val ui = CallUi(
+        name = name, number = number, state = state, status = status, sim = sim, groups = groupNames,
+        ref = ref?.let { it.second.ifBlank { Jalali.fa(it.first) } }, note = note, lastText = lastText,
+        muted = CallHolder.muted, recording = Recorder.recording, route = CallHolder.route,
+        routeActive = CallHolder.route != CallAudioState.ROUTE_EARPIECE, held = state == Call.STATE_HOLDING,
+        showPad = showPad, typed = typed,
+        canReply = Prefs.on("quickReplies") && Prefs.quickReplies.any { it.isNotBlank() }
+    )
+    val acts = CallActs(
+        answer = { call.answer(0) }, reject = { call.reject(false, null) }, hangup = { call.disconnect() },
+        mute = { CallHolder.service?.setMuted(!CallHolder.muted) },
+        pad = { showPad = true }, closePad = { showPad = false },
+        dtmf = { ch ->
+            typed += ch
+            scope.launch { call.playDtmfTone(ch); delay(160); call.stopDtmfTone() }
+        },
+        route = {
             if (routeOpts.size > 2) showRoute = true
             else setRoute(if (CallHolder.route == CallAudioState.ROUTE_SPEAKER) CallAudioState.ROUTE_EARPIECE else CallAudioState.ROUTE_SPEAKER)
-        }
-    }
+        },
+        record = onRecord,
+        hold = { if (state == Call.STATE_HOLDING) call.unhold() else call.hold() },
+        note = { editNote = true }, replies = { showReplies = true }
+    )
 
-    val bgBrush = when (Prefs.callTheme) {
-        1 -> Brush.verticalGradient(listOf(cs.surface, cs.surface))
-        2 -> Brush.verticalGradient(listOf(Color.Black, Color.Black))
-        else -> Brush.verticalGradient(listOf(lerp(cs.surface, cs.primary, 0.38f), cs.surface))
-    }
-    Box(Modifier.fillMaxSize().background(bgBrush)) {
-        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            // نوار وضعیت فشرده و یکپارچه
-            Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(if (state == Call.STATE_RINGING) "تماس ورودی" else if (connected) "در حال مکالمه" else "تماس",
-                    fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = cs.onSurfaceVariant)
-                Spacer(Modifier.weight(1f))
-                if (sim != null) AssistChip(onClick = {}, label = { Text(sim, fontSize = 11.sp) })
-                if (Recorder.recording) {
-                    Spacer(Modifier.width(6.dp))
-                    Surface(shape = RoundedCornerShape(50), color = Color(0xFFFFE3E3)) {
-                        Text("● ضبط", Modifier.padding(horizontal = 10.dp, vertical = 6.dp), fontSize = 11.sp, color = Color(0xFFB3261E), fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
+    CallTheme {
+        CallScreenBody(ui, acts) {
             AnimatedVisibility(CallHolder.waiting != null, enter = slideInVertically { -it } + fadeIn(), exit = slideOutVertically { -it } + fadeOut()) {
                 CallHolder.waiting?.let { WaitingCard(it, call) }
             }
             CallHolder.held?.let { HeldCard(it, call) }
-
-            // کارت هویت تماس‌گیرنده؛ اطلاعات در چیدمان افقی و بدون انباشته‌شدن عمودی
-            Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(26.dp),
-                colors = CardDefaults.cardColors(containerColor = cs.surfaceContainerHigh.copy(alpha = 0.94f))) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(name ?: number, 76.dp)
-                    Spacer(Modifier.width(14.dp))
-                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
-                        Text(name ?: Jalali.fa(number).ifBlank { "ناشناس" }, fontSize = 22.sp,
-                            fontWeight = FontWeight.Bold, maxLines = 1, textAlign = TextAlign.Start)
-                        if (number.isNotBlank()) Text(Jalali.fa(number), fontSize = 14.sp, color = cs.onSurfaceVariant, maxLines = 1)
-                        Spacer(Modifier.height(5.dp))
-                        Text(status, fontSize = if (state == Call.STATE_ACTIVE) 19.sp else 13.sp,
-                            color = cs.primary, fontWeight = FontWeight.SemiBold)
-                    }
-                }
-                if ((groupNames.isNotEmpty() && Prefs.on("groupsShow")) || (ref != null && Prefs.on("referrer"))) {
-                    HorizontalDivider(color = cs.outlineVariant.copy(alpha = 0.55f))
-                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 7.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        if (groupNames.isNotEmpty() && Prefs.on("groupsShow")) groupNames.forEach { AssistChip(onClick = {}, label = { Text(it, fontSize = 11.sp) }) }
-                        if (ref != null && Prefs.on("referrer")) AssistChip(onClick = {}, label = { Text("معرف: " + ref.second.ifBlank { Jalali.fa(ref.first) }, fontSize = 11.sp) })
-                    }
-                }
-            }
-
-            // جزئیات ثانویه در یک نوار جمع‌وجور؛ فضای اصلی برای کنترل‌های تماس می‌ماند
-            if ((note.isNotBlank() && Prefs.on("notes")) || (lastLoaded && Prefs.on("lastCall"))) {
-                Spacer(Modifier.height(8.dp))
-                Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp),
-                    colors = CardDefaults.cardColors(containerColor = cs.secondaryContainer.copy(alpha = 0.72f))) {
-                    Column(Modifier.fillMaxWidth().padding(horizontal = 13.dp, vertical = 9.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        if (note.isNotBlank() && Prefs.on("notes")) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("یادداشت", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = cs.onSecondaryContainer)
-                                Spacer(Modifier.width(8.dp))
-                                Text(note, Modifier.weight(1f), fontSize = 13.sp, color = cs.onSecondaryContainer, maxLines = 2)
-                                IconButton(onClick = { editNote = true }, modifier = Modifier.size(30.dp)) { Icon(Icons.Default.Edit, null, Modifier.size(16.dp)) }
-                            }
-                        }
-                        if (lastLoaded && Prefs.on("lastCall")) {
-                            val r = last
-                            Text(if (r == null) "اولین تماس با این شماره" else "آخرین تماس: ${Jalali.dateOnly(r.date)}  •  ${typeName(r.type)}${if (r.duration > 0) "  •  ${fmtDur(r.duration)}" else ""}",
-                                fontSize = 11.sp, color = cs.onSecondaryContainer.copy(alpha = 0.82f), maxLines = 1)
-                        }
-                    }
-                }
-            }
-
-            Spacer(Modifier.weight(1f, fill = true))
-
-            if (showPad) {
-                Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = cs.surfaceContainerHigh)) {
-                    Column(Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(Jalali.fa(typed.takeLast(24)), fontSize = 20.sp, modifier = Modifier.padding(4.dp))
-                        Keypad(Modifier.widthIn(max = 340.dp), keyHeight = 46.dp, onKey = { ch ->
-                            typed += ch
-                            scope.launch { call.playDtmfTone(ch); delay(160); call.stopDtmfTone() }
-                        })
-                        TextButton({ showPad = false }) { Text("بستن صفحه‌کلید") }
-                    }
-                }
-            } else if (connected || dialing) {
-                // کنترل‌ها در دو ردیف سه‌تایی، با فاصله و اندازهٔ یکسان
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                    ActionBtn("🎙", "بی‌صدا", CallHolder.muted) { CallHolder.service?.setMuted(!CallHolder.muted) }
-                    if (connected) ActionBtn("⌨", "صفحه‌کلید", false) { showPad = true }
-                    else ActionBtn("📝", "یادداشت", false) { editNote = true }
-                    routeBtn()
-                }
-                if (connected) {
-                    Spacer(Modifier.height(10.dp))
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                        if (Prefs.on("record")) ActionBtn("⏺", "ضبط", Recorder.recording, onRecord)
-                        ActionBtn("⏸", "انتظار", state == Call.STATE_HOLDING) { if (state == Call.STATE_HOLDING) call.unhold() else call.hold() }
-                        ActionBtn("📝", "یادداشت", false) { editNote = true }
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(10.dp))
-            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-                color = cs.surface.copy(alpha = 0.96f), tonalElevation = 3.dp) {
-                Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    if (state == Call.STATE_RINGING) {
-                        if (Prefs.on("quickReplies") && Prefs.quickReplies.any { it.isNotBlank() }) {
-                            OutlinedButton(onClick = { showReplies = true }, Modifier.fillMaxWidth().padding(horizontal = 6.dp).height(44.dp),
-                                shape = RoundedCornerShape(16.dp)) {
-                                Icon(Icons.Default.Message, null); Spacer(Modifier.width(8.dp)); Text("انتخاب پیامک برای رد تماس")
-                            }
-                            Spacer(Modifier.height(10.dp))
-                        }
-                        AnswerControls(Prefs.answerStyle, { call.answer(0) }, { call.reject(false, null) })
-                    } else {
-                        CallCircleButton(false, "پایان تماس") { call.disconnect() }
-                    }
-                }
-            }
         }
-    }
 
+        if (showReplies) {
+            AlertDialog(onDismissRequest = { showReplies = false },
+                title = { Text("انتخاب پیام آماده") },
+                text = {
+                    Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Prefs.quickReplies.filter { it.isNotBlank() }.forEach { message ->
+                            OutlinedButton(onClick = { pendingReply = message; showReplies = false },
+                                Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
+                                Text(message, Modifier.fillMaxWidth(), textAlign = TextAlign.Start, maxLines = 3)
+                            }
+                        }
+                    }
+                }, confirmButton = { TextButton({ showReplies = false }) { Text("بستن") } })
+        }
 
-    if (showReplies) {
-        AlertDialog(onDismissRequest = { showReplies = false },
-            title = { Text("انتخاب پیام آماده") },
+        pendingReply?.let { message ->
+            AlertDialog(
+                onDismissRequest = { pendingReply = null },
+                title = { Text("رد تماس با پیامک") },
+                text = { Text("تماس رد شود و پیامک زیر ارسال شود؟\n\n$message") },
+                confirmButton = {
+                    Button(onClick = { call.reject(true, message); pendingReply = null },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E9F5B))) { Text("رد تماس و ارسال پیامک") }
+                },
+                dismissButton = { TextButton(onClick = { pendingReply = null }) { Text("انصراف") } }
+            )
+        }
+
+        if (showRoute) AlertDialog(onDismissRequest = { showRoute = false }, title = { Text("خروجی صدا") },
             text = {
-                Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Prefs.quickReplies.filter { it.isNotBlank() }.forEach { message ->
-                        OutlinedButton(onClick = { pendingReply = message; showReplies = false },
-                            Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
-                            Text(message, Modifier.fillMaxWidth(), textAlign = TextAlign.Start, maxLines = 3)
+                Column {
+                    routeOpts.forEach { o ->
+                        Row(Modifier.fillMaxWidth().clickable { setRoute(o.first); showRoute = false }.padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(CallHolder.route == o.first, { setRoute(o.first); showRoute = false })
+                            Text(o.third + "  " + o.second)
                         }
                     }
                 }
-            }, confirmButton = { TextButton({ showReplies = false }) { Text("بستن") } })
-    }
+            }, confirmButton = { TextButton({ showRoute = false }) { Text("بستن") } })
 
-    pendingReply?.let { message ->
-        AlertDialog(
-            onDismissRequest = { pendingReply = null },
-            title = { Text("رد تماس با پیامک") },
-            text = { Text("تماس رد شود و پیامک زیر ارسال شود؟\\n\\n$message") },
-            confirmButton = {
-                Button(onClick = { call.reject(true, message); pendingReply = null },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E9F5B))) { Text("رد تماس و ارسال پیامک") }
-            },
-            dismissButton = { TextButton(onClick = { pendingReply = null }) { Text("انصراف") } }
-        )
-    }
-
-    if (showRoute) AlertDialog(onDismissRequest = { showRoute = false }, title = { Text("خروجی صدا") },
-        text = {
-            Column {
-                routeOpts.forEach { o ->
-                    Row(Modifier.fillMaxWidth().clickable { setRoute(o.first); showRoute = false }.padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically) {
-                        RadioButton(CallHolder.route == o.first, { setRoute(o.first); showRoute = false })
-                        Text(o.third + "  " + o.second)
-                    }
-                }
-            }
-        }, confirmButton = { TextButton({ showRoute = false }) { Text("بستن") } })
-
-    if (editNote) {
-        var tmp by remember { mutableStateOf(note) }
-        AlertDialog(onDismissRequest = { editNote = false }, title = { Text("یادداشت") },
-            text = { OutlinedTextField(tmp, { tmp = it }, Modifier.fillMaxWidth(), minLines = 3) },
-            confirmButton = { TextButton({ db.setNote(number, tmp); note = tmp.trim(); editNote = false }) { Text("ذخیره") } },
-            dismissButton = { TextButton({ editNote = false }) { Text("انصراف") } })
+        if (editNote) {
+            var tmp by remember { mutableStateOf(note) }
+            AlertDialog(onDismissRequest = { editNote = false }, title = { Text("یادداشت") },
+                text = { OutlinedTextField(tmp, { tmp = it }, Modifier.fillMaxWidth(), minLines = 3) },
+                confirmButton = { TextButton({ db.setNote(number, tmp); note = tmp.trim(); editNote = false }) { Text("ذخیره") } },
+                dismissButton = { TextButton({ editNote = false }) { Text("انصراف") } })
+        }
     }
 }

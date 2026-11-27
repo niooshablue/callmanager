@@ -38,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -53,8 +54,10 @@ import java.util.Locale
 // ---------------- جزئیات مخاطب ----------------
 
 @Composable
-fun DetailScreen(t: DetailTarget, onBack: () -> Unit) {
+fun DetailScreen(target: DetailTarget, onBack: () -> Unit) {
     val ctx = LocalContext.current
+    // پس از افزودن شماره به مخاطبین و بازگشت، فهرست مخاطبین دوباره بارگذاری می‌شود و اینجا خودکار به‌روز می‌شود
+    val t = remember(Repo.contacts, target) { if (target.contactId > 0) target else targetFor(target.number, target.name) }
     val db = remember { Db.get(ctx) }
     val cs = MaterialTheme.colorScheme
     val num = t.number
@@ -86,14 +89,16 @@ fun DetailScreen(t: DetailTarget, onBack: () -> Unit) {
         },
         bottomBar = {
             Surface(tonalElevation = 3.dp) {
-                Button({ save(); Toast.makeText(ctx, "ذخیره شد", Toast.LENGTH_SHORT).show() },
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp).height(52.dp), shape = RoundedCornerShape(26.dp)) {
-                    Text("ذخیره", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Box(Modifier.navigationBarsPadding()) {
+                    Button({ save(); Toast.makeText(ctx, "ذخیره شد", Toast.LENGTH_SHORT).show() },
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp).height(52.dp), shape = RoundedCornerShape(26.dp)) {
+                        Text("ذخیره", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
     ) { pad ->
-        Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Column(Modifier.padding(pad).fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 Avatar(t.name.ifBlank { num }, 96.dp)
                 Spacer(Modifier.height(10.dp))
@@ -107,29 +112,26 @@ fun DetailScreen(t: DetailTarget, onBack: () -> Unit) {
                 }
             }
             SimCallRow(num)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton({ sendSms(ctx, num) }, Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(24.dp)) {
-                    Icon(Icons.Default.Email, null); Spacer(Modifier.width(6.dp)); Text("ارسال پیامک")
-                }
-                if (t.contactId > 0) OutlinedButton({
-                    ctx.startActivity(Intent(Intent.ACTION_EDIT).setData(ContentUris.withAppendedId(ContactsContract.Contacts.CONTENT_URI, t.contactId)))
-                }, Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(24.dp)) {
-                    Icon(Icons.Default.Edit, null); Spacer(Modifier.width(6.dp)); Text("ویرایش مخاطب")
+            // شمارهٔ ناشناس (ذخیره‌نشده): افزودن سریع به مخاطبین
+            if (t.contactId <= 0 && num.isNotBlank()) {
+                Button({ addToContacts(ctx, num) }, Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(26.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = cs.secondary, contentColor = cs.onSecondary)) {
+                    Icon(Icons.Default.PersonAdd, null); Spacer(Modifier.width(8.dp))
+                    Text("افزودن به مخاطبین", fontSize = 15.sp, fontWeight = FontWeight.Bold)
                 }
             }
-
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton({ fav = !fav }, Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 4.dp)) {
-                    Text(if (fav) "⭐ علاقه‌مند" else "☆ علاقه‌مندی", fontSize = 12.sp, maxLines = 1)
+                QuickTile(Icons.Default.Email, "پیامک") { sendSms(ctx, num) }
+                if (t.contactId > 0) QuickTile(Icons.Default.Edit, "ویرایش") {
+                    ctx.startActivity(Intent(Intent.ACTION_EDIT).setData(ContentUris.withAppendedId(ContactsContract.Contacts.CONTENT_URI, t.contactId)))
                 }
-                OutlinedButton({
+                QuickTile(if (fav) Icons.Default.Star else Icons.Default.StarBorder, "علاقه‌مندی", active = fav) { fav = !fav }
+                QuickTile(Icons.Default.ContentCopy, "کپی") {
                     val cm = ctx.getSystemService(ClipboardManager::class.java)
                     cm.setPrimaryClip(ClipData.newPlainText("number", num))
                     Toast.makeText(ctx, "شماره کپی شد", Toast.LENGTH_SHORT).show()
-                }, Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 4.dp)) { Text("📋 کپی شماره", fontSize = 12.sp, maxLines = 1) }
-                OutlinedButton({ remindDlg = true }, Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 4.dp)) {
-                    Text("⏰ یادآوری", fontSize = 12.sp, maxLines = 1)
                 }
+                QuickTile(Icons.Default.Alarm, "یادآوری", active = activeReminder != null) { remindDlg = true }
             }
 
             if (activeReminder != null) {
@@ -342,6 +344,66 @@ fun ContactPicker(onPick: (Contact) -> Unit, onDismiss: () -> Unit) {
 // ---------------- تنظیمات چندسطحی ----------------
 
 @Composable
+private fun RowScope.QuickTile(icon: ImageVector, label: String, active: Boolean = false, onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val look = LocalLook.current
+    Column(Modifier.weight(1f).clip(RoundedCornerShape(look.row)).background(if (active) cs.primaryContainer else cs.surfaceContainerHigh)
+        .clickable(onClick = onClick).padding(vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(icon, label, tint = if (active) cs.primary else cs.onSurfaceVariant, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.height(4.dp))
+        Text(label, fontSize = 11.sp, maxLines = 1, color = if (active) cs.onPrimaryContainer else cs.onSurface)
+    }
+}
+
+/** پیش‌نمایش کوچک و ثابت از ظاهر هر قالب */
+@Composable
+private fun MiniPhone(style: Int) {
+    val bg = when (style) { 1 -> Color(0xFFF2F2F7); 2 -> Color(0xFFF4F4F4); else -> Color(0xFFF5F7FB) }
+    val accent = when (style) { 1 -> Color(0xFF007AFF); 2 -> Color(0xFF2F82F5); else -> Color(0xFF3B5BDB) }
+    val shape = RoundedCornerShape(14.dp)
+    Box(Modifier.size(72.dp, 128.dp).clip(shape).background(bg).border(1.dp, Color.Gray.copy(alpha = 0.4f), shape)) {
+        when (style) {
+            1 -> Box(Modifier.padding(8.dp, 10.dp).width(36.dp).height(8.dp).clip(RoundedCornerShape(4.dp)).background(Color.Black.copy(alpha = 0.8f)))
+            2 -> Box(Modifier.padding(8.dp, 20.dp).width(30.dp).height(7.dp).clip(RoundedCornerShape(4.dp)).background(Color.Black.copy(alpha = 0.75f)))
+            else -> Box(Modifier.fillMaxWidth().height(28.dp).clip(RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp)).background(accent.copy(alpha = 0.35f)))
+        }
+        Column(Modifier.align(Alignment.Center).padding(horizontal = 6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            repeat(3) { Box(Modifier.fillMaxWidth().height(14.dp).clip(RoundedCornerShape(if (style == 1) 2.dp else 7.dp)).background(Color.White)) }
+        }
+        when (style) {
+            0 -> Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp).width(56.dp).height(14.dp).clip(RoundedCornerShape(7.dp)).background(Color.White)) {
+                Box(Modifier.align(Alignment.CenterStart).padding(start = 3.dp).size(10.dp).clip(CircleShape).background(accent))
+            }
+            1 -> Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp).width(58.dp).height(16.dp).clip(RoundedCornerShape(8.dp))
+                .background(Color.White).border(0.5.dp, Color.Gray.copy(alpha = 0.5f), RoundedCornerShape(8.dp)))
+            else -> Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(18.dp).background(Color.White)) {
+                Box(Modifier.align(Alignment.Center).width(16.dp).height(8.dp).clip(RoundedCornerShape(4.dp)).background(accent.copy(alpha = 0.35f)))
+            }
+        }
+    }
+}
+
+@Composable
+private fun PresetCard(style: Int, title: String, desc: String, current: Boolean, onApply: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val look = LocalLook.current
+    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(look.card),
+        colors = CardDefaults.cardColors(containerColor = if (current) cs.primaryContainer else cs.surfaceContainerHigh)) {
+        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            MiniPhone(style)
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                Text(desc, fontSize = 12.sp, color = if (current) cs.onPrimaryContainer else cs.onSurfaceVariant)
+                Spacer(Modifier.height(8.dp))
+                if (current) Text("✓ فعال است", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = cs.primary)
+                else Button(onApply, shape = RoundedCornerShape(20.dp)) { Text("اعمال روی کل برنامه") }
+            }
+        }
+    }
+}
+
+@Composable
 fun SubPage(title: String, onBack: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -379,48 +441,112 @@ fun SettingsScreen() {
 
     when (path) {
         "" -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            MenuItem("👥", "مدیریت گروه‌ها", "ساخت گروه و تنظیم رد یا مجاز بودن تماس‌ها") { path = "groups" }
-            MenuItem("🎨", "ظاهر برنامه", "رنگ‌ها، نوشته‌ها، فونت و اعداد") { path = "look" }
-            MenuItem("📞", "تماس و سیم‌کارت", "سیم‌کارت پیش‌فرض، مسدودسازی، صفحه قفل") { path = "calls" }
-            MenuItem("🧩", "ویژگی‌ها", "فعال یا غیرفعال‌کردن امکانات برنامه") { path = "features" }
-            MenuItem("🔔", "یادآوری‌های تماس", "مشاهده و حذف یادآوری‌های ثبت‌شده") { path = "reminders" }
-            MenuItem("📣", "اعلان‌ها", "تماس‌های بی‌پاسخ و نشان آیکون") { path = "notif" }
-            MenuItem("👆", "حرکات و لمس", "لمس کوتاه، بلند و کشیدن در تاریخچه و مخاطبین") { path = "gest" }
-            MenuItem("💾", "داده‌ها", "خروجی اکسل و مکالمات ضبط‌شده") { path = "data" }
-            MenuItem("ℹ️", "دربارهٔ برنامه", "نسخه و توضیحات") { path = "about" }
+            MenuItem(Icons.Default.Groups, "مدیریت گروه‌ها", "رد تماس گروه‌های انتخابی یا فقط گروه‌های مجاز", Color(0xFF7E57C2)) { path = "groups" }
+            MenuItem(Icons.Default.Palette, "ظاهر و قالب‌ها", "iPhone 17، Galaxy S26، شماره‌گیر، صفحه تماس و رنگ‌ها", Color(0xFFEC407A)) { path = "look" }
+            MenuItem(Icons.Default.Call, "تماس و سیم‌کارت", "سیم‌کارت پیش‌فرض، مسدودسازی، صفحه قفل", Color(0xFF26A69A)) { path = "calls" }
+            MenuItem(Icons.Default.Extension, "ویژگی‌ها", "روشن/خاموش‌کردن تک‌تک امکانات برنامه", Color(0xFFFF7043)) { path = "features" }
+            MenuItem(Icons.Default.NotificationsActive, "یادآوری‌های تماس", "مشاهده و حذف یادآوری‌های ثبت‌شده", Color(0xFFFFA000)) { path = "reminders" }
+            MenuItem(Icons.Default.Notifications, "اعلان‌ها", "تماس‌های بی‌پاسخ و نشان آیکون", Color(0xFF42A5F5)) { path = "notif" }
+            MenuItem(Icons.Default.TouchApp, "حرکات و لمس", "لمس کوتاه، بلند و کشیدن در تاریخچه و مخاطبین", Color(0xFF8D6E63)) { path = "gest" }
+            MenuItem(Icons.Default.Storage, "داده‌ها", "خروجی اکسل و مکالمات ضبط‌شده", Color(0xFF607D8B)) { path = "data" }
+            MenuItem(Icons.Default.Info, "دربارهٔ برنامه", "نسخه و توضیحات", Color(0xFF78909C)) { path = "about" }
         }
         "groups" -> SubPage("مدیریت گروه‌ها", back) { GroupsScreen() }
         "reminders" -> SubPage("یادآوری‌های تماس", back) { ReminderListContent() }
         "features" -> SubPage("ویژگی‌ها", back) {
-            SectionCard("امکانات برنامه") {
-                Prefs.featureList.forEach { (k, label) ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(label, Modifier.weight(1f), fontSize = 14.sp)
-                        Switch(Prefs.on(k), { Prefs.setFlag(k, it) })
-                    }
+            Prefs.features.groupBy { it.section }.forEach { (section, items) ->
+                SectionCard(section) {
+                    items.forEach { f -> SettingSwitch(f.label, null, Prefs.on(f.key)) { Prefs.setFlag(f.key, it) } }
                 }
-                Text("هر مورد غیرفعال شود، آن بخش نمایش داده نمی‌شود یا اجرا نمی‌شود. تنظیمات اعلان تماس بی‌پاسخ، «مزاحم نشو» و رد تماس ناشناس‌ها در بخش‌های خودشان هستند.",
+            }
+            Text("هر مورد غیرفعال شود، آن بخش نمایش داده نمی‌شود یا اجرا نمی‌شود. تنظیمات اعلان تماس بی‌پاسخ، «مزاحم نشو»، رد تماس ناشناس‌ها و حالت فیلتر گروه‌ها در بخش‌های خودشان هستند.",
+                fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        "look" -> SubPage("ظاهر و قالب‌ها", back) {
+            MenuItem(Icons.Default.AutoAwesome, "قالب‌های آماده", "یک‌کلیک: iPhone 17، Galaxy S26 یا مدرن برای کل برنامه", Color(0xFF5C6BC0)) { path = "look/presets" }
+            MenuItem(Icons.Default.Smartphone, "ساختار برنامه", "تم روشن/تیره، سربرگ بالا و منوی پایین", Color(0xFF26A69A)) { path = "look/app" }
+            MenuItem(Icons.Default.Dialpad, "شماره‌گیر", "قالب کلیدها، لرزش، صدا و امکانات", Color(0xFFEF5350)) { path = "look/dialer" }
+            MenuItem(Icons.Default.PhoneInTalk, "صفحه تماس", "چیدمان، پس‌زمینه، شیوهٔ پاسخ و پیش‌نمایش", Color(0xFF66BB6A)) { path = "look/call" }
+            MenuItem(Icons.Default.Palette, "رنگ‌ها", "پس‌زمینه، کادرها، نوشته‌ها و رنگ اصلی", Color(0xFFEC407A)) { path = "look/colors" }
+            MenuItem(Icons.Default.TextFields, "نوشته و اعداد", "اندازه، فونت و نمایش فارسی/انگلیسی اعداد", Color(0xFF8D6E63)) { path = "look/text" }
+            OutlinedButton({ Prefs.reset() }, Modifier.fillMaxWidth()) { Text("بازگشت رنگ‌ها و فونت به پیش‌فرض") }
+        }
+        "look/presets" -> SubPage("قالب‌های آماده", { path = "look" }) {
+            Text("با انتخاب هر قالب، ظاهر کل برنامه، سربرگ و منوی پایین، شماره‌گیر، صفحه تماس و شیوهٔ پاسخ یک‌جا تغییر می‌کند. بعد از آن می‌توانید هر بخش را جداگانه هم تغییر دهید.",
+                fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val cur = if (Prefs.uiStyle == Prefs.callLayout) Prefs.uiStyle else -1
+            PresetCard(1, "iPhone 17", "الهام‌گرفته از iOS: عنوان بزرگ، منوی شیشه‌ای شناور، فهرست تخت، کلیدهای گرد با حروف، صفحه تماس شیشه‌ای و پاسخ کشویی", cur == 1) {
+                Prefs.applyPreset(1); Toast.makeText(ctx, "قالب iPhone 17 اعمال شد", Toast.LENGTH_SHORT).show()
+            }
+            PresetCard(2, "Galaxy S26", "الهام‌گرفته از One UI: گوشه‌های گرد و بزرگ، منوی پایین با نشانگر قرصی، صفحه تماس با آواتار بزرگ و پاسخ با کشیدن دایره‌ها", cur == 2) {
+                Prefs.applyPreset(2); Toast.makeText(ctx, "قالب Galaxy S26 اعمال شد", Toast.LENGTH_SHORT).show()
+            }
+            PresetCard(0, "مدرن (پیش‌فرض)", "سربرگ گرادیان، منوی شناور با برچسب متحرک، کارت‌های نرم و رنگ‌های پویای سیستم", cur == 0) {
+                Prefs.applyPreset(0); Toast.makeText(ctx, "قالب مدرن اعمال شد", Toast.LENGTH_SHORT).show()
+            }
+            Text("اعمال قالب، رنگ‌های سفارشی (پس‌زمینه، کارت، نوشته و رنگ اصلی) را هم به حالت پیش‌فرض قالب برمی‌گرداند. این قالب‌ها فقط از نظر ظاهر الهام گرفته‌اند و فونت و آیکون‌های اختصاصی آن سیستم‌ها را ندارند.",
+                fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        "look/app" -> SubPage("ساختار برنامه", { path = "look" }) {
+            SectionCard("تم روشن / تیره") {
+                OptionChips(listOf("مطابق سیستم", "روشن", "تیره"), Prefs.darkMode) { Prefs.darkMode = it; Prefs.save() }
+            }
+            SectionCard("قالب کلی برنامه") {
+                OptionChips(listOf("مدرن", "iPhone 17", "Galaxy S26"), Prefs.uiStyle) { Prefs.uiStyle = it; Prefs.save() }
+                Text("رنگ‌ها، گوشه‌ها، فهرست‌ها و کارت‌ها از قالب پیروی می‌کنند. اگر رنگ سفارشی انتخاب کرده‌اید، روی رنگ قالب اولویت دارد.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                SettingSwitch("رنگ‌های پویای سیستم (Material You)", "فقط در قالب «مدرن»", Prefs.on("dynamicColor")) { Prefs.setFlag("dynamicColor", it) }
+            }
+            SectionCard("سربرگ بالای صفحه‌ها") {
+                OptionChips(listOf("خودکار (مطابق قالب)", "گرادیان مدرن", "عنوان بزرگ iPhone", "Galaxy", "فشرده"), Prefs.headerStyle + 1) { Prefs.headerStyle = it - 1; Prefs.save() }
+                SettingSwitch("نمایش تاریخ زیر عنوان", null, Prefs.on("headerDate")) { Prefs.setFlag("headerDate", it) }
+            }
+            SectionCard("منوی پایین") {
+                OptionChips(listOf("خودکار (مطابق قالب)", "شناور مدرن", "شیشه‌ای iPhone", "چسبیده Galaxy", "کلاسیک"), Prefs.navStyle + 1) { Prefs.navStyle = it - 1; Prefs.save() }
+            }
+        }
+        "look/dialer" -> SubPage("شماره‌گیر", { path = "look" }) {
+            SectionCard("قالب صفحه‌کلید") {
+                OptionChips(listOf("کلاسیک", "دایره‌ای", "مینیمال", "iPhone", "Galaxy"), Prefs.dialerStyle) { Prefs.dialerStyle = it; Prefs.save() }
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Keypad(Modifier.widthIn(max = 300.dp), keyHeight = 40.dp, style = Prefs.dialerStyle, onKey = {})
+                }
+            }
+            SectionCard("امکانات شماره‌گیر") {
+                Prefs.features.filter { it.section == "شماره‌گیر" }.forEach { f ->
+                    SettingSwitch(f.label, null, Prefs.on(f.key)) { Prefs.setFlag(f.key, it) }
+                }
+                Text("به‌صورت پیش‌فرض با لمس کادر شماره، کیبورد گوشی باز نمی‌شود. برای جای‌گذاری، دکمهٔ Paste یا لمس طولانی روی کادر را بزنید.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        "look" -> SubPage("ظاهر برنامه", back) {
-            MenuItem("🎨", "رنگ‌ها", "پس‌زمینه، کادرها، نوشته‌ها و رنگ اصلی") { path = "look/colors" }
-            MenuItem("🔤", "نوشته و اعداد", "اندازه، فونت و نمایش فارسی/انگلیسی اعداد") { path = "look/text" }
-            MenuItem("🌙", "صفحه تماس", "تم تیره یا هماهنگ با برنامه") { path = "look/call" }
-            MenuItem("🧩", "قالب‌ها", "قالب شماره‌گیر، صفحه تماس و دکمهٔ پاسخ") { path = "look/templates" }
-            OutlinedButton({ Prefs.reset() }, Modifier.fillMaxWidth()) { Text("بازگشت به تنظیمات پیش‌فرض ظاهر") }
+        "look/call" -> SubPage("صفحه تماس", { path = "look" }) {
+            SectionCard("چیدمان صفحه تماس") {
+                OptionChips(listOf("مدرن", "iPhone", "Galaxy"), Prefs.callLayout) { Prefs.callLayout = it; Prefs.save() }
+                Button({ Nav.callPreview = 0 }, Modifier.fillMaxWidth()) { Text("پیش‌نمایش تماس ورودی") }
+                OutlinedButton({ Nav.callPreview = 1 }, Modifier.fillMaxWidth()) { Text("پیش‌نمایش در حال مکالمه") }
+            }
+            SectionCard("پس‌زمینهٔ صفحه تماس") {
+                OptionChips(listOf("رنگی / گرادیان", "ساده", "تیره (AMOLED)"), Prefs.callTheme) { Prefs.callTheme = it; Prefs.save() }
+                SettingSwitch("همیشه تیره", "صفحهٔ تماس با رنگ‌های تیره نمایش داده شود", Prefs.callDark) { Prefs.callDark = it; Prefs.save() }
+                Text("«تیره (AMOLED)» پس‌زمینهٔ کاملاً مشکی دارد. در چیدمان‌های iPhone و Galaxy حالت «رنگی» همان پس‌زمینهٔ تیرهٔ مخصوص آن قالب است و «ساده» از تم برنامه پیروی می‌کند.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            SectionCard("شیوهٔ پاسخ به تماس") {
+                OptionChips(answerStyleNames, Prefs.answerStyle) { Prefs.answerStyle = it; Prefs.save() }
+                Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Color(0xFF101820)).padding(16.dp)) {
+                    AnswerControls(Prefs.answerStyle, {}, {})
+                }
+                Text("پیش‌نمایش قابل امتحان است؛ در تماس واقعی همین حرکت پاسخ می‌دهد.", fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            SectionCard("دکمه‌ها و اطلاعات صفحه تماس") {
+                Prefs.features.filter { it.section == "صفحه تماس" }.forEach { f ->
+                    SettingSwitch(f.label, null, Prefs.on(f.key)) { Prefs.setFlag(f.key, it) }
+                }
+            }
         }
         "look/colors" -> SubPage("رنگ‌ها", { path = "look" }) {
-            SectionCard("تم کلی دستگاه") {
-                Text("تم دستگاه، رنگ پس‌زمینه، کادرها، نوشته‌ها و دکمه‌های کل برنامه و صفحه تماس را یکجا تغییر می‌دهد. انتخاب دستی رنگ‌ها در بخش پایین، روی تم دستگاه اولویت دارد.",
-                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Prefs.uiThemeNames.forEachIndexed { i, n ->
-                        FilterChip(Prefs.uiTheme == i, { Prefs.uiTheme = i; Prefs.save() }, label = { Text(n) })
-                    }
-                }
-                if (Prefs.uiTheme != 0) Text("برای بازگشت به رنگ‌بندی معمول، «پیش‌فرض» را انتخاب کنید.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
             SectionCard("رنگ‌بندی") {
                 ColorRow("رنگ پس‌زمینه", Prefs.bgPresets, Prefs.bg) { Prefs.bg = it; Prefs.save() }
                 ColorRow("رنگ کادرها (کارت‌ها)", Prefs.cardPresets, Prefs.card) { Prefs.card = it; Prefs.save() }
@@ -428,48 +554,6 @@ fun SettingsScreen() {
                 ColorRow("رنگ اصلی (دکمه‌ها و تأکید)", Prefs.accentPresets, Prefs.accent) { Prefs.accent = it; Prefs.save() }
             }
             SectionCard("پیش‌نمایش") { Text("نمونه متن: سلام، این یک متن آزمایشی است ۱۲۳۴۵") }
-        }
-        "look/templates" -> SubPage("قالب‌ها", { path = "look" }) {
-            SectionCard("قالب شماره‌گیر") {
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("کلاسیک", "دایره‌ای", "مینیمال", "شیشه‌ای").forEachIndexed { i, n ->
-                        FilterChip(Prefs.dialerStyle == i, { Prefs.dialerStyle = i; Prefs.save() }, label = { Text(n) })
-                    }
-                }
-                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    Keypad(Modifier.widthIn(max = 280.dp), keyHeight = 40.dp, style = Prefs.dialerStyle, onKey = {})
-                }
-            }
-            SectionCard("قالب صفحه تماس") {
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("گرادیان", "ساده", "تیره (AMOLED)").forEachIndexed { i, n ->
-                        FilterChip(Prefs.callTheme == i, { Prefs.callTheme = i; Prefs.save() }, label = { Text(n) })
-                    }
-                }
-                Text("«تیره (AMOLED)» پس‌زمینهٔ کاملاً مشکی دارد و در نمایشگرهای OLED مصرف باتری را کم می‌کند.",
-                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            SectionCard("شیوهٔ پاسخ به تماس") {
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("دکمه‌های گرد", "کشویی (iOS)", "کپسولی", "کشیدن بالا/پایین", "اسلاید دوطرفه (iOS کلاسیک)").forEachIndexed { i, n ->
-                        FilterChip(Prefs.answerStyle == i, { Prefs.answerStyle = i; Prefs.save() }, label = { Text(n) })
-                    }
-                }
-                Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Color(0xFF101820)).padding(16.dp)) {
-                    AnswerControls(Prefs.answerStyle, {}, {})
-                }
-                Text("پیش‌نمایش قابل امتحان است؛ در تماس واقعی همین حرکت پاسخ می‌دهد.", fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-        "look/call" -> SubPage("تم صفحه تماس", { path = "look" }) {
-            SectionCard("تم صفحه مکالمه") {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(!Prefs.callDark, { Prefs.callDark = false; Prefs.save() }, label = { Text("مطابق برنامه") })
-                    FilterChip(Prefs.callDark, { Prefs.callDark = true; Prefs.save() }, label = { Text("🌙 تیره") })
-                }
-                Text("با انتخاب «تیره»، صفحهٔ تماس همیشه با رنگ‌های تیره نمایش داده می‌شود.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
         }
         "look/text" -> SubPage("نوشته و اعداد", { path = "look" }) {
             SectionCard("اندازهٔ نوشته‌ها") {
@@ -682,7 +766,7 @@ fun SettingsScreen() {
         "data/rec" -> SubPage("مکالمات ضبط‌شده", { path = "data" }) { RecordingsContent() }
         else -> SubPage("دربارهٔ برنامه", back) {
             SectionCard("مدیریت تماس") {
-                Text("نسخه ۱٫۰", fontWeight = FontWeight.Bold)
+                Text("نسخه ۱٫۲", fontWeight = FontWeight.Bold)
                 Text("شماره‌گیر، تاریخچه، مخاطبین، یادآوری تماس، گروه‌بندی و مدیریت هوشمند تماس‌ها.", fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Divider()
